@@ -16,6 +16,7 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 
 from data import StrokeDataset, collate
+from data_mathwriting import MathWritingDataset, collate as collate_mw
 from model import StrokeTransformer, loss_fn
 
 ROOT = Path(__file__).resolve().parent
@@ -30,17 +31,25 @@ def pick_device() -> str:
     return "cpu"
 
 
-def train(klass: str, *, steps: int, batch_size: int, lr: float,
+def train(klass: str, *, dataset: str, steps: int, batch_size: int, lr: float,
           d_model: int, nhead: int, layers: int, num_components: int,
           max_len: int, log_every: int, save_every: int,
           device: str) -> None:
-    print(f"loading dataset: {klass}")
-    train_ds = StrokeDataset(klass, "train", max_len=max_len)
-    val_ds = StrokeDataset(klass, "valid", max_len=max_len, scale=train_ds.scale)
+    print(f"loading dataset: {dataset} / {klass}")
+    if dataset == "quickdraw":
+        train_ds = StrokeDataset(klass, "train", max_len=max_len)
+        val_ds = StrokeDataset(klass, "valid", max_len=max_len, scale=train_ds.scale)
+        coll = collate
+    elif dataset == "mathwriting":
+        train_ds = MathWritingDataset("train", max_len=max_len)
+        val_ds = MathWritingDataset("valid", max_len=max_len, scale=train_ds.scale)
+        coll = collate_mw
+    else:
+        raise ValueError(f"unknown dataset: {dataset}")
     print(f"train: {len(train_ds)}  valid: {len(val_ds)}  scale: {train_ds.scale:.3f}")
 
     train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True,
-                              collate_fn=collate, num_workers=0,
+                              collate_fn=coll, num_workers=0,
                               drop_last=True)
 
     print(f"device: {device}")
@@ -57,13 +66,14 @@ def train(klass: str, *, steps: int, batch_size: int, lr: float,
                                                       eta_min=lr * 0.05)
 
     CKPT.mkdir(parents=True, exist_ok=True)
-    log_path = CKPT / f"{klass}.train_log.jsonl"
+    name = klass if dataset == "quickdraw" else "mathwriting"
+    log_path = CKPT / f"{name}.train_log.jsonl"
     log_f = log_path.open("a")
 
     model.train()
     step = 0
     t0 = time.time()
-    pbar = tqdm(total=steps, desc=f"train {klass}")
+    pbar = tqdm(total=steps, desc=f"train {name}")
     train_iter = iter(train_loader)
     last = {"loss": float("nan")}
     while step < steps:
@@ -93,7 +103,7 @@ def train(klass: str, *, steps: int, batch_size: int, lr: float,
                              pen=f"{parts['pen']:.3f}")
 
         if save_every and step % save_every == 0:
-            ckpt_path = CKPT / f"{klass}.step_{step}.pt"
+            ckpt_path = CKPT / f"{name}.step_{step}.pt"
             torch.save({
                 "step": step,
                 "model_state": model.state_dict(),
@@ -107,7 +117,7 @@ def train(klass: str, *, steps: int, batch_size: int, lr: float,
             tqdm.write(f"  saved {ckpt_path.name}")
 
     # final checkpoint
-    final_path = CKPT / f"{klass}.final.pt"
+    final_path = CKPT / f"{name}.final.pt"
     torch.save({
         "step": step,
         "model_state": model.state_dict(),
@@ -125,7 +135,10 @@ def train(klass: str, *, steps: int, batch_size: int, lr: float,
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("klass", help="QuickDraw class name (e.g. cat)")
+    ap.add_argument("klass", help="QuickDraw class name (e.g. cat) "
+                    "— ignored for --dataset mathwriting")
+    ap.add_argument("--dataset", choices=["quickdraw", "mathwriting"],
+                    default="quickdraw")
     ap.add_argument("--steps", type=int, default=20000)
     ap.add_argument("--batch-size", type=int, default=64)
     ap.add_argument("--lr", type=float, default=1e-3)
@@ -143,6 +156,7 @@ def main() -> None:
     device = args.device or pick_device()
     train(
         args.klass,
+        dataset=args.dataset,
         steps=args.steps, batch_size=args.batch_size, lr=args.lr,
         d_model=args.d_model, nhead=args.nhead, layers=args.layers,
         num_components=args.num_components, max_len=args.max_len,
