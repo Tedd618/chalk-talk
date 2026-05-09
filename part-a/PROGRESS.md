@@ -5,6 +5,96 @@ things ended up. Newest entries on top.
 
 ---
 
+## 2026-05-10 — A.2 speech-stroke alignment lands
+
+### Motivation
+
+A.1 gives us clean stroke trajectories for OCT-style content. The
+training-shaped data format we ultimately want is an interleaved
+event stream: words and pen events together, sorted by time. A.2 is
+the bridge — run speech-to-text on the audio, get word-level
+timestamps, and merge them with the stroke timestamps from A.1.
+
+### Decisions
+
+- **STT backend**: `faster-whisper` (CTranslate2-based). Apple Silicon
+  friendly, supports word-level timestamps natively, fast on CPU at
+  int8 quantization. The original `openai-whisper` package would also
+  work but is slower.
+- **Model size**: `small` (244 MB) as the default. The OCT tutor
+  speaks clearly and at moderate pace; small is sufficient for word
+  boundaries within ~100–200 ms. We can swap in `medium` if systematic
+  alignment errors show up later.
+- **Event schema**: a single time-ordered JSONL of `word`, `pen`, and
+  `stroke_end` events. `pen` events carry `(x, y, t, stroke_id, first/
+  last_in_stroke)`. This is the shape the downstream training data
+  takes — the same schema feeds whichever token-granularity variant we
+  train (stroke-anchored A.4a, word-anchored A.4b, or symbol-anchored
+  A.4c). Format decisions stay consistent across the variants.
+- **Layout**: new directory `part-a/experiments/a2-alignment/` with
+  three small scripts: `stt.py` (audio → words.jsonl), `merge.py`
+  (a1 strokes + a2 words → events.jsonl), `viz_events.py` (animated
+  strokes plus a scrolling caption highlighting the active word).
+
+### Work
+
+Walked through the pipeline end-to-end on the existing OCT 3-minute
+pilot:
+
+1. Installed `faster-whisper`. Whisper-small auto-downloads the model
+   (no API keys, fully local). Total install time on top of the
+   existing a1 venv: ~30 seconds.
+2. `stt.py oct --duration 180` produced 425 word events in 53 seconds
+   of CPU inference. Detected language `en` with probability 1.00.
+   ~142 words per minute — believable for a tutor speaking at a
+   teaching pace.
+3. `merge.py oct` produced a 1442-event time-ordered JSONL
+   interleaving 425 word events, 880 pen events, and 137 stroke_end
+   events.
+4. `viz_events.py oct` renders an mp4 that combines the smoothed
+   stroke reconstruction from A.1 with a scrolling caption bar at the
+   bottom showing recently spoken words. The current spoken word is
+   highlighted in cyan above the caption.
+
+### Eyeball validation
+
+When the caption reads "It's A squared plus B squared is equal to C
+squared", the canvas shows the equation `a² + b² = c²` being written
+in real time. Small symbols and superscripts land at the moments the
+corresponding words are spoken. Long-running silent periods correctly
+have no word events. Stretches with both speaking and writing have
+both event types interleaved smoothly.
+
+### Where this leaves us
+
+A.1 + A.2 together produce, per video, a clean training-shaped event
+stream:
+
+```
+videos/<tag>.mp4
+  │
+  ├─ a1: extract.py  → strokes.jsonl   (137 strokes / 3 min)
+  ├─ a2: stt.py      → words.jsonl     (425 words / 3 min)
+  └─ a2: merge.py    → events.jsonl    (1442 events, time-ordered)
+```
+
+Pipeline is ready to scale. The next bottleneck is corpus size — we
+have one OCT video; we want at least a few hours.
+
+### Tomorrow
+
+Two parallel tracks:
+
+- **Corpus growth**: pick 3–5 more OCT-style videos, run them through
+  a1+a2, validate by reconstruction + caption alignment, accept those
+  that pass. Aim for ~3 hours of clean event data.
+- **A.3 baseline preparation**: download CROHME and IAM Online
+  datasets, set up a small Sketch-RNN training script. This is the
+  modeling-stack validation step — train an unconditional stroke
+  generator on public data while the corpus grows in parallel.
+
+---
+
 ## 2026-05-09 — A.1 stroke-extraction baseline lands
 
 ### Motivation
