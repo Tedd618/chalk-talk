@@ -71,9 +71,16 @@ happened during the word's audio duration.
 - Shortest sequences (~600 words / lesson).
 - Speech-led — natural if we think of the tutor as primarily
   speaking, illustrating as they go.
-- Speech is sparse and bursty — long silent writing stretches force
-  either "silent-word" tokens or one word stretched over many
-  strokes. Likely the worst fit to the data of the three.
+- Most pen events have a co-occurring word (KA / OCT empirically have
+  little drawing-without-speech), so "empty stroke list" tokens are the
+  exception, not the rule. See "Analysis" below.
+- **Stroke-segmentation robust**: the model trains on raw timestamped
+  pen events grouped by word. How those events are "segmented into
+  strokes" is cosmetic; the model never sees stroke boundaries as
+  labels. This is a major practical advantage given the difficulty of
+  clean stroke segmentation.
+- **Naturally pairs with a pretrained math LM** (Qwen-Math etc.) —
+  see "Architectural pairing" below.
 
 #### Option 3 — Symbol-anchored
 **Token = one written symbol or shape + words spoken at that moment.**
@@ -93,14 +100,139 @@ strokes are produced by a sub-decoder.
 
 ### Common across all three
 
-- **Action-type head** at each top-level step: decides what kind of
-  token is being emitted (per-option type vocabulary) plus an `END`.
-- **Sub-decoder** producing pen events, conditioned on the top-level
-  token. Sketch-RNN style: MDN over `(Δx, Δy)`, categorical over
-  pen-state.
-- **Word vocabulary**: subword tokenizer (BPE) trained on the
-  KA + OCT transcripts, ~16k–32k tokens. Same tokenizer across all
-  three variants for fair comparison.
+The model is a **single causal transformer over a flat token
+sequence** — no separate sub-decoder, no LSTM. Sketch-RNN's
+contribution we keep is its **output representation** (MDN over
+`(Δx, Δy)`); we drop its RNN backbone in favor of transformer.
+
+- **Single causal transformer**, ~12 layers / ~512 hidden as
+  starting size; tuned later. Modern stack: rotary positional
+  embeddings, FlashAttention, gradient checkpointing.
+- **Cross-attention** to canvas-image embeddings and topic
+  embeddings (both pre-encoded and prepended to the sequence).
+- **Token vocabulary** = BPE word tokens + structural separators
+  (`<stroke_start>`, `<stroke_end>`, `<end>`) + a generic `<pen>`
+  marker. The actual `(Δx, Δy)` and pen-state values are emitted by
+  output heads at `<pen>` positions, not as discrete tokens.
+- **Output heads** dispatched per position by predicted action type:
+  - **Action-type categorical** — `{word, pen, separator, end}`
+  - **Word head** — softmax over BPE vocab (~16k–32k)
+  - **MDN head** — Mixture of M=20 bivariate Gaussians over
+    `(Δx, Δy)` (Sketch-RNN's representation, on a transformer
+    backbone)
+  - **Pen-state head** — categorical over `{down, up, end}`
+- **BPE tokenizer** trained on KA + OCT transcripts. Same tokenizer
+  across variants for fair comparison.
+
+The hierarchy ("stroke-anchored" / "word-anchored" / "symbol-anchored")
+is **implicit, not architectural**. It describes how the data is
+organized and where separator tokens are placed; mechanically the
+model is the same flat transformer in all three cases.
+
+### Pretraining strategy
+
+Training a transformer for joint stroke + speech generation purely
+on KA + OCT data alone would underfit dramatically. Instead we use
+a multi-stage strategy. There is **no single pretrained "stroke
+transformer" base model to fine-tune from** (the closest, Sketch-RNN
+checkpoints, are LSTM-based and not directly transferable), but we
+can warm-start most components:
+
+**Stage 1 — Component warm-starts (off-the-shelf):**
+- Canvas encoder: pretrained ViT (e.g. DINOv2-small), frozen for
+  first runs, LoRA-tuned later.
+- Topic / text encoder: pretrained sentence transformer (frozen).
+- Word embeddings: initialized from a pretrained tokenizer's
+  embedding table (e.g. Llama or Qwen-Math), even though the
+  decoder is freshly initialized.
+
+**Stage 2 — Stroke-only pretraining on public datasets:**
+Pretrain the transformer (without canvas / topic conditioning) on
+publicly available stroke datasets. This gives the model priors for
+"what does a hand-drawn stroke look like" before we add multimodal
+conditioning:
+- **QuickDraw** — 50M sketches, 345 classes (used by Sketch-RNN).
+  Generic shape priors.
+- **CROHME** — handwritten math expressions with stroke traces.
+  Math-symbol priors.
+- **IAM Online** — handwritten English text with stroke traces.
+  English-letter priors.
+
+**Stage 3 — Multimodal fine-tuning on KA + OCT:**
+Add canvas + speech + topic conditioning, fine-tune on extracted
+teacher-video data with the full multimodal objective. Most
+parameters are warm-started by Stages 1–2; only the conditioning
+attention layers and possibly the action-type head start fresh.
+
+This staged approach is the standard recipe for "from scratch in a
+new modality" research (cf. LLaVA's vision-language alignment via
+CLIP + Llama; Whisper's pretraining hierarchy). The word-anchored
+variant gets even more help — its entire backbone can be warm-started
+from Qwen-Math (see the architectural-pairing table above).
+
+### Analysis (from A.1 pilot inspection)
+
+Two observations from inspecting Khan Academy and OCT pilot videos
+sharpen the trade-offs between options:
+
+**1. Speech and drawing co-occurrence.** Tutors speak almost
+continuously, including throughout drawing periods. Drawing-without-
+speech stretches are rare; speaking-without-drawing stretches are
+common (transitions, setup, problem statements). This means:
+- Word-anchored isn't burdened by long "empty word" tokens (drawing
+  silently is rare).
+- Stroke-anchored has to handle plenty of "speech-only" intervals,
+  which need a separate non-stroke token type.
+
+**2. Stroke-segmentation difficulty.** Even with cursor-resistant
+extraction, stroke boundaries are hard to detect cleanly: KA cursive
+flows letters together (under-cuts), OCT slow line-drawing fragments
+single lines (over-cuts), and a single threshold combo doesn't fit
+both. The implications differ by option:
+- **Stroke-anchored**: stroke boundaries are the *labels* we train
+  on. Bad segmentation = bad supervision signal. This is fragile.
+- **Word-anchored**: stroke boundaries are not labels. The model
+  trains on raw pen events grouped by word. Segmentation noise is
+  invisible to the loss.
+- **Symbol-anchored**: even worse than stroke-anchored — symbol
+  boundaries are even harder to recover than stroke boundaries.
+
+### Architectural pairing
+
+Each option has a natural model-family fit:
+
+| Option | Natural foundation |
+|---|---|
+| Stroke-anchored | **From-scratch** Sketch-RNN-derived autoregressive model with Sketch-RNN sub-decoder. Learns language and math reasoning together with stroke dynamics. |
+| Word-anchored | **Pretrained math LLM** (Qwen-Math 7B or similar) with a vision encoder for canvas + a stroke decoder head for `<pen>` tokens. Math reasoning + language come for free; the network only needs to learn joint stroke production. |
+| Symbol-anchored | Either, with HMR labeling pipeline first. |
+
+The word-anchored path is *much* more likely to produce a working
+system in the short term — it inherits Qwen-Math's reasoning. The
+stroke-anchored path is the harder, purer research bet — it forces
+the model to learn teacher dynamics from data, with no language or
+math priors borrowed in.
+
+### Decision
+
+**We will pursue both eventually. Order: stroke-anchored first, then
+word-anchored.**
+
+Rationale:
+- Stroke-anchored is the harder path but the more novel research
+  contribution. Doing it first establishes the dataset and the joint
+  generation infrastructure on the most-restrictive case; word-
+  anchored on Qwen-Math reuses the same data and pipeline.
+- If stroke-anchored fails or hits a ceiling, word-anchored is the
+  fallback — and it's likely to succeed because of the Qwen-Math
+  prior.
+- If stroke-anchored succeeds, comparing it to word-anchored becomes
+  a clean ablation about whether language priors help or hurt
+  teacher-style joint generation.
+
+A.4a (stroke-anchored) is the active build target; A.4b (word-
+anchored on Qwen-Math) is the next-up variant. A.4c (symbol-anchored)
+remains gated on A.3.5 and is the longest-tail variant.
 
 ## Conditioning inputs
 
@@ -118,20 +250,50 @@ cross-attended to) once per step.
 
 ## Data sources (training)
 
-1. **Khan Academy** — CC BY-NC-SA, research-friendly. Sal Khan's
-   board work: digital pen on a black canvas, mostly no hand
-   occlusion (pure stroke trace), ~1000s of hours, good speech-board
-   sync. Best signal-to-noise for stroke extraction.
-2. **The Organic Chemistry Tutor** — YouTube, more diverse content,
-   includes molecule diagrams and longer derivations. Some videos
-   show physical paper with hand occlusion; others are tablet
-   recordings. Provides style diversity.
-3. **(Possibly) 3Blue1Brown** — animation-heavy, less directly usable
-   for stroke-level training, but the speech is high-quality. Listed
-   for future consideration.
-4. **(Possibly) SketchAgent-style synthetic data** — frontier VLM in
-   the loop generates additional training samples on math topics.
-   Useful for filling gaps but secondary to real video extraction.
+### v1 curation policy: OCT-style only
+
+After the A.1 pilot we found that the two source styles have
+dramatically different extraction quality with our current pipeline:
+
+- **OCT-style** (slow, deliberate writing with frequent pen-lifts —
+  e.g. The Organic Chemistry Tutor): reconstructs cleanly. Strokes
+  alone, replayed on a blank canvas, are recognizable as the original
+  writing.
+- **KA-style** (cursive flow with continuous pen contact across many
+  letters — e.g. Sal Khan): reconstruction is unreadable. Cursive
+  flow defeats centroid-based pen-tip estimation and Bézier
+  segmentation alike.
+
+**Decision**: For v1 of the model, train only on OCT-style content.
+Defer KA-style until we have a substantially better cursive-aware
+extractor (probably requires explicit cursor tracking — which our
+v2 attempt failed at — or a fundamentally different approach like
+trajectory recovery from inked region skeletons).
+
+This is a curation-driven strategy, not a permanent abandonment of
+KA. If A.4a (stroke-anchored from-scratch) succeeds on OCT-style
+data, we'll know the modeling approach works and can then invest in
+KA-style extraction.
+
+### v1 corpus (OCT-style)
+
+1. **The Organic Chemistry Tutor** — YouTube, the canonical example.
+   Hundreds of hours of math, chemistry, physics with discrete
+   strokes.
+2. **PatrickJMT, Professor Leonard, Mr. H Tutoring** and similar
+   tablet-tutor channels — to be selected per video for clean
+   stroke recording.
+3. **(Possibly) SketchAgent-style synthetic data** — frontier VLM
+   in the loop generates additional samples on math topics. Useful
+   for filling gaps but secondary to real video extraction.
+
+### v2+ corpus (when cursive-aware extraction is ready)
+
+1. **Khan Academy** — CC BY-NC-SA, research-friendly. ~1000s of
+   hours. The biggest single math corpus, blocked on extraction
+   quality.
+2. **3Blue1Brown** — animation-heavy, only the handwritten segments
+   are stroke-applicable.
 
 ## Why this is hard
 

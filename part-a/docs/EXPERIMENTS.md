@@ -193,22 +193,30 @@ beyond A.1/A.2, cleanest match to Sketch-RNN.
 
 ### Common architecture
 
-Shared across all three variants (target ~50–500M params total):
+Shared across all three variants (target ~50–500M params total).
+See [PLAN.md](PLAN.md#common-across-all-three) for the full spec; in
+short:
 
-- **Canvas encoder**: small CNN (or ViT-tiny), output 256-dim.
-- **Topic encoder**: text encoder, output 256-dim.
-- **Top-level decoder**: causal transformer, ~12 layers, ~512 hidden,
-  cross-attention to canvas+topic embeddings, autoregressive over
-  the chosen token type.
-- **Sub-decoder**: produces pen events for whatever the top-level
-  token represents (a stroke, the strokes of a word, or the strokes
-  of a symbol). Sketch-RNN style — MDN over (Δx, Δy) with M=20
-  components, categorical over pen-state.
-- **Action-type head** at the top level (vocabulary depends on
-  variant: stroke + speech-only + END for A.4a, word + END for A.4b,
-  symbol + END for A.4c).
+- **Canvas encoder**: pretrained ViT-small (DINOv2 or similar),
+  frozen for first runs, LoRA-tuned later. Projects to 256-dim.
+- **Topic encoder**: pretrained sentence transformer (frozen).
+- **Single causal transformer**, ~12 layers / ~512 hidden, cross-
+  attention to canvas+topic embeddings. No sub-decoder.
+- **Output heads** dispatched per position by predicted action type:
+  - Action-type categorical: `{word, pen, separator, end}`
+  - Word head: softmax over BPE vocab (~16k–32k)
+  - MDN head: GMM over `(Δx, Δy)`, M=20 components
+  - Pen-state head: categorical over `{down, up, end}`
+- **Variant-specific structural tokens** mark the hierarchy
+  (e.g. A.4a places `<stroke_start>` / `<stroke_end>` separators;
+  A.4b uses word boundaries; A.4c uses symbol-unit separators).
+  Same model, different organization of the supervision signal.
 - Re-render canvas every K pen events during training so the visual
   conditioning stays current. K ≈ 30 (~1 second of writing).
+- **Pretraining required**: don't train from scratch on KA+OCT only —
+  use the staged strategy in [PLAN.md](PLAN.md#pretraining-strategy)
+  (warm-start components → stroke-only pretrain on QuickDraw +
+  CROHME + IAM → multimodal fine-tune on KA + OCT).
 
 ### Per-variant data preparation
 - **A.4a**: directly consumes A.2's interleaved (stroke, word)
