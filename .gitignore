@@ -1,0 +1,38 @@
+# macOS
+.DS_Store
+._*
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+
+# Editors / IDEs
+.vscode/
+.idea/
+*.swp
+
+# Part A — large data and intermediate artifacts (regenerable)
+part-a/experiments/*/videos/*.mp4
+part-a/experiments/*/videos/*.webm
+part-a/experiments/*/videos/*.info.json
+part-a/experiments/*/frames/
+part-a/experiments/*/output/*.mp4
+part-a/experiments/*/output/*.webm
+
+# Keep extracted stroke data and per-video metadata in git (small, useful)
+!part-a/experiments/*/videos/*.meta.json
+!part-a/experiments/*/output/*.jsonl
+
+# Local model checkpoints (will get big later)
+*.ckpt
+*.pt
+*.bin
+checkpoints/
+
+# Logs
+*.log
+logs/

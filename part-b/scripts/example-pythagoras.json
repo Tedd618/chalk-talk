@@ -1,0 +1,54 @@
+{
+  "title": "Pythagorean Theorem",
+  "level": "Grade 8",
+  "canvas": {"width": 800, "height": 500},
+  "steps": [
+    {"type": "speech", "text": "Today we're going to explore the Pythagorean theorem"},
+
+    {"type": "say_draw",
+     "text": "First, let's draw a right triangle",
+     "draws": [
+       {"shape": "triangle", "x1": 250, "y1": 380, "x2": 550, "y2": 380, "x3": 550, "y3": 180}
+     ]},
+
+    {"type": "wait", "ms": 300},
+
+    {"type": "say_draw",
+     "text": "We'll call the three sides a, b, and c",
+     "draws": [
+       {"shape": "text", "x": 390, "y": 405, "text": "a", "size": 22},
+       {"shape": "text", "x": 565, "y": 285, "text": "b", "size": 22},
+       {"shape": "text", "x": 380, "y": 270, "text": "c", "size": 22, "color": "#d33"}
+     ]},
+
+    {"type": "wait", "ms": 300},
+
+    {"type": "speech", "text": "Here, c is the hypotenuse — the longest side"},
+
+    {"type": "say_draw",
+     "text": "And c squared equals a squared plus b squared",
+     "draws": [
+       {"shape": "formula", "x": 280, "y": 430, "latex": "c^2 = a^2 + b^2"}
+     ]},
+
+    {"type": "wait", "ms": 500},
+
+    {"type": "say_draw",
+     "text": "For example, if a is 3 and b is 4",
+     "draws": [
+       {"shape": "formula", "x": 60, "y": 80, "latex": "a = 3,\\ b = 4"}
+     ]},
+
+    {"type": "say_draw",
+     "text": "Then c squared is 9 plus 16, which equals 25",
+     "draws": [
+       {"shape": "formula", "x": 60, "y": 130, "latex": "c^2 = 9 + 16 = 25"}
+     ]},
+
+    {"type": "say_draw",
+     "text": "So c equals 5",
+     "draws": [
+       {"shape": "formula", "x": 60, "y": 180, "latex": "c = 5", "color": "#d33"}
+     ]}
+  ]
+}

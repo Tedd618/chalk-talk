@@ -1,0 +1,359 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8" />
+<title>AI Blackboard Tutor — Player</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
+<style>
+  :root { --gap: 12px; --bg: #fafaf7; --board: #fffdf6; --ink: #222; }
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+         background: var(--bg); color: var(--ink); }
+  .app { display: grid; grid-template-columns: 360px 1fr; gap: var(--gap); padding: var(--gap);
+         height: 100vh; }
+  .panel { display: flex; flex-direction: column; gap: var(--gap); min-height: 0; }
+  textarea { flex: 1; font-family: ui-monospace, Menlo, monospace; font-size: 12px;
+             padding: 8px; border: 1px solid #ccc; border-radius: 6px; resize: none; }
+  .controls { display: flex; gap: 8px; flex-wrap: wrap; }
+  button { padding: 8px 14px; border: 1px solid #888; background: #fff; border-radius: 6px;
+           cursor: pointer; font-size: 14px; }
+  button:hover { background: #f0f0f0; }
+  button:disabled { opacity: 0.4; cursor: not-allowed; }
+  select, input[type=range] { padding: 4px; }
+  .stage { display: flex; flex-direction: column; gap: var(--gap); min-height: 0; }
+  .board-wrap { position: relative; background: var(--board);
+                border: 1px solid #ccc; border-radius: 8px;
+                box-shadow: 0 1px 3px rgba(0,0,0,0.06);
+                width: 800px; height: 500px; overflow: hidden; }
+  canvas { position: absolute; inset: 0; }
+  #overlay { position: absolute; inset: 0; pointer-events: none; }
+  .formula-box { position: absolute; font-size: 22px; transform-origin: top left; }
+  .text-box { position: absolute; font-family: "Comic Sans MS", "Marker Felt", cursive;
+              transform: translate(-50%, -50%); }
+  .status { font-size: 13px; color: #666; min-height: 1.4em; }
+  h1 { font-size: 16px; margin: 0 0 4px 0; }
+  .row { display: flex; gap: 8px; align-items: center; font-size: 13px; }
+  .hint { font-size: 12px; color: #888; }
+</style>
+</head>
+<body>
+<div class="app">
+  <div class="panel">
+    <h1>AI Blackboard Tutor — Player</h1>
+    <div class="row">
+      <button id="loadExample">Load example</button>
+      <button id="clearScript">Clear script</button>
+    </div>
+    <textarea id="script" placeholder='Paste the JSON from Claude web here'></textarea>
+    <div class="row">
+      <label>Voice</label>
+      <select id="voice"></select>
+    </div>
+    <div class="row">
+      <label>Rate</label>
+      <input id="rate" type="range" min="0.7" max="1.4" step="0.05" value="1.0">
+      <span id="rateVal">1.0</span>
+    </div>
+    <div class="controls">
+      <button id="play">▶ Play</button>
+      <button id="stop" disabled>■ Stop</button>
+      <button id="clearBoard">Clear board</button>
+    </div>
+    <div class="status" id="status">Ready</div>
+    <div class="hint">Chrome/Edge recommended (Web Speech API).</div>
+  </div>
+  <div class="stage">
+    <div class="board-wrap" id="boardWrap">
+      <canvas id="board" width="800" height="500"></canvas>
+      <div id="overlay"></div>
+    </div>
+  </div>
+</div>
+
+<script>
+(() => {
+  const $ = (id) => document.getElementById(id);
+  const canvas = $('board'), ctx = canvas.getContext('2d');
+  const overlay = $('overlay');
+  const status = $('status');
+  let stopFlag = false;
+  let currentUtter = null;
+
+  // ---------- TTS ----------
+  let voices = [];
+  function loadVoices() {
+    voices = speechSynthesis.getVoices();
+    const sel = $('voice');
+    sel.innerHTML = '';
+    const ko = voices.filter(v => v.lang.startsWith('ko'));
+    const others = voices.filter(v => !v.lang.startsWith('ko'));
+    [...ko, ...others].forEach((v, i) => {
+      const opt = document.createElement('option');
+      opt.value = voices.indexOf(v);
+      opt.textContent = `${v.name} (${v.lang})${v.default ? ' *' : ''}`;
+      sel.appendChild(opt);
+    });
+  }
+  speechSynthesis.onvoiceschanged = loadVoices;
+  loadVoices();
+
+  function speak(text) {
+    return new Promise((resolve) => {
+      const u = new SpeechSynthesisUtterance(text);
+      const idx = parseInt($('voice').value, 10);
+      if (!isNaN(idx) && voices[idx]) u.voice = voices[idx];
+      u.lang = (u.voice && u.voice.lang) || 'en-US';
+      u.rate = parseFloat($('rate').value);
+      u.onend = u.onerror = () => { currentUtter = null; resolve(); };
+      currentUtter = u;
+      speechSynthesis.speak(u);
+    });
+  }
+
+  // ---------- Drawing (animated, hand-writing feel) ----------
+  function applyStroke(s) {
+    ctx.strokeStyle = s.color || '#222';
+    ctx.fillStyle = s.color || '#222';
+    ctx.lineWidth = s.width || 2;
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+  }
+  const PEN_SPEED = 0.9; // ms per px — controls handwriting pace
+  function lineLen(x1,y1,x2,y2) { return Math.hypot(x2-x1, y2-y1); }
+
+  // Animate a poly-line through a list of points by drawing tiny segments per frame.
+  function animatePolyline(s, points, totalDur) {
+    return new Promise(resolve => {
+      applyStroke(s);
+      // segment lengths and cumulative
+      const segs = [];
+      let total = 0;
+      for (let i = 0; i < points.length - 1; i++) {
+        const L = lineLen(points[i].x, points[i].y, points[i+1].x, points[i+1].y);
+        segs.push(L); total += L;
+      }
+      if (total === 0) { resolve(); return; }
+      const dur = totalDur || Math.max(250, total * PEN_SPEED);
+      let prev = { x: points[0].x, y: points[0].y };
+      const start = performance.now();
+
+      function pointAt(t) { // t in [0,1]
+        const want = total * t;
+        let acc = 0;
+        for (let i = 0; i < segs.length; i++) {
+          if (acc + segs[i] >= want) {
+            const local = segs[i] === 0 ? 0 : (want - acc) / segs[i];
+            const a = points[i], b = points[i+1];
+            return { x: a.x + (b.x - a.x) * local, y: a.y + (b.y - a.y) * local };
+          }
+          acc += segs[i];
+        }
+        return { x: points[points.length-1].x, y: points[points.length-1].y };
+      }
+
+      function frame(now) {
+        if (stopFlag) { resolve(); return; }
+        const t = Math.min(1, (now - start) / dur);
+        const cur = pointAt(t);
+        ctx.beginPath();
+        ctx.moveTo(prev.x, prev.y);
+        ctx.lineTo(cur.x, cur.y);
+        ctx.stroke();
+        prev = cur;
+        if (t < 1) requestAnimationFrame(frame);
+        else resolve();
+      }
+      requestAnimationFrame(frame);
+    });
+  }
+
+  function animateLine(s) {
+    return animatePolyline(s,
+      [{x:s.x1,y:s.y1},{x:s.x2,y:s.y2}],
+      s.duration);
+  }
+  function animateRect(s) {
+    const {x,y,w,h} = s;
+    return animatePolyline(s,
+      [{x,y},{x:x+w,y},{x:x+w,y:y+h},{x,y:y+h},{x,y}],
+      s.duration);
+  }
+  function animateTriangle(s) {
+    return animatePolyline(s,
+      [{x:s.x1,y:s.y1},{x:s.x2,y:s.y2},{x:s.x3,y:s.y3},{x:s.x1,y:s.y1}],
+      s.duration);
+  }
+  function animateCircle(s) {
+    return new Promise(resolve => {
+      applyStroke(s);
+      const TAU = Math.PI * 2;
+      const dur = s.duration || Math.max(400, s.r * TAU * PEN_SPEED);
+      const start = performance.now();
+      let prevAngle = -Math.PI/2; // start at top
+      function frame(now) {
+        if (stopFlag) { resolve(); return; }
+        const t = Math.min(1, (now - start) / dur);
+        const curAngle = -Math.PI/2 + TAU * t;
+        ctx.beginPath();
+        ctx.arc(s.cx, s.cy, s.r, prevAngle, curAngle);
+        ctx.stroke();
+        prevAngle = curAngle;
+        if (t < 1) requestAnimationFrame(frame);
+        else resolve();
+      }
+      requestAnimationFrame(frame);
+    });
+  }
+
+  function animateText(s) {
+    return new Promise(resolve => {
+      const div = document.createElement('div');
+      div.className = 'text-box';
+      div.style.left = s.x + 'px';
+      div.style.top = s.y + 'px';
+      div.style.fontSize = (s.size || 20) + 'px';
+      div.style.color = s.color || '#222';
+      overlay.appendChild(div);
+      const full = s.text || '';
+      const dur = s.duration || Math.max(250, full.length * 70);
+      const start = performance.now();
+      function frame(now) {
+        if (stopFlag) { div.textContent = full; resolve(); return; }
+        const t = Math.min(1, (now - start) / dur);
+        const n = Math.floor(full.length * t);
+        div.textContent = full.slice(0, n);
+        if (t < 1) requestAnimationFrame(frame);
+        else { div.textContent = full; resolve(); }
+      }
+      requestAnimationFrame(frame);
+    });
+  }
+
+  function animateFormula(s) {
+    return new Promise(resolve => {
+      const div = document.createElement('div');
+      div.className = 'formula-box';
+      div.style.left = s.x + 'px';
+      div.style.top = s.y + 'px';
+      div.style.color = s.color || '#222';
+      div.style.opacity = '0';
+      div.style.transition = 'opacity 500ms linear';
+      try {
+        katex.render(s.latex || '', div, { throwOnError: false, displayMode: false });
+      } catch (e) {
+        div.textContent = s.latex || '';
+      }
+      overlay.appendChild(div);
+      // force layout, then fade in
+      requestAnimationFrame(() => { div.style.opacity = '1'; });
+      const dur = s.duration || 500;
+      setTimeout(resolve, dur);
+    });
+  }
+
+  function dispatchDraw(s) {
+    switch (s.shape) {
+      case 'line':     return animateLine(s);
+      case 'rect':     return animateRect(s);
+      case 'circle':   return animateCircle(s);
+      case 'triangle': return animateTriangle(s);
+      case 'text':     return animateText(s);
+      case 'formula':  return animateFormula(s);
+      default: console.warn('unknown shape', s); return Promise.resolve();
+    }
+  }
+
+  function clearBoard() {
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    overlay.innerHTML = '';
+  }
+
+  // ---------- Runner ----------
+  const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+
+  async function runScript(script) {
+    if (!script.steps || !Array.isArray(script.steps)) {
+      throw new Error('Missing steps array');
+    }
+    clearBoard();
+    stopFlag = false;
+    setRunning(true);
+    let i = 0;
+    for (const step of script.steps) {
+      if (stopFlag) break;
+      i++;
+      status.textContent = `[${i}/${script.steps.length}] ${step.type}`;
+      try {
+        if (step.type === 'speech') {
+          await speak(step.text || '');
+        } else if (step.type === 'draw') {
+          await dispatchDraw(step);
+        } else if (step.type === 'wait') {
+          await sleep(step.ms || 0);
+        } else if (step.type === 'say_draw') {
+          const speechP = step.text ? speak(step.text) : Promise.resolve();
+          const drawsP = (async () => {
+            for (const d of (step.draws || [])) {
+              if (stopFlag) break;
+              await dispatchDraw(d);
+            }
+          })();
+          await Promise.all([speechP, drawsP]);
+        } else {
+          console.warn('unknown step type', step);
+        }
+      } catch (e) {
+        console.error('step error', step, e);
+      }
+    }
+    setRunning(false);
+    status.textContent = stopFlag ? 'Stopped' : 'Done';
+  }
+
+  function setRunning(running) {
+    $('play').disabled = running;
+    $('stop').disabled = !running;
+  }
+
+  function stopAll() {
+    stopFlag = true;
+    speechSynthesis.cancel();
+    currentUtter = null;
+  }
+
+  // ---------- Wire up ----------
+  $('play').addEventListener('click', () => {
+    let parsed;
+    try {
+      const raw = $('script').value.trim();
+      const cleaned = raw.replace(/^```(?:json)?/i, '').replace(/```$/, '').trim();
+      parsed = JSON.parse(cleaned);
+    } catch (e) {
+      status.textContent = 'JSON parse error: ' + e.message;
+      return;
+    }
+    runScript(parsed).catch(e => {
+      status.textContent = 'Error: ' + e.message;
+      setRunning(false);
+    });
+  });
+  $('stop').addEventListener('click', stopAll);
+  $('clearBoard').addEventListener('click', clearBoard);
+  $('clearScript').addEventListener('click', () => { $('script').value = ''; });
+  $('rate').addEventListener('input', (e) => {
+    $('rateVal').textContent = parseFloat(e.target.value).toFixed(2);
+  });
+  $('loadExample').addEventListener('click', async () => {
+    try {
+      const r = await fetch('../scripts/example-pythagoras.json');
+      $('script').value = await r.text();
+      status.textContent = 'Example loaded';
+    } catch (e) {
+      status.textContent = 'Failed to load example (file:// restriction). Paste it manually.';
+    }
+  });
+})();
+</script>
+</body>
+</html>
