@@ -31,7 +31,13 @@ part-a/experiments/*/output/*.webm
 *.ckpt
 *.pt
 *.bin
-checkpoints/
+
+# Per-experiment checkpoint dirs but keep training logs
+part-a/experiments/*/checkpoints/*.pt
+part-a/experiments/*/checkpoints/*.ckpt
+
+# Per-experiment downloaded raw data (regenerable from download script)
+part-a/experiments/*/data/*.npz
 
 # Logs
 *.log

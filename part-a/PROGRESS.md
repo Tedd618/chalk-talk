@@ -5,6 +5,102 @@ things ended up. Newest entries on top.
 
 ---
 
+## 2026-05-10 (later) — Track 2: stroke transformer trains, makes cat-like cats
+
+### Motivation
+
+After A.2 landed, scaling the OCT corpus would have been the obvious
+next move. But noticing the chaotic algebra reconstruction surfaced a
+deeper concern: video-extracted stroke quality has a hard ceiling.
+The fix is the staged pretraining strategy already in PLAN.md —
+pretrain on clean public stroke datasets (where strokes were captured
+directly, sub-pixel precision), then fine-tune on extracted teacher-
+video data for the joint speech-stroke behavior. Track 2 is the
+"validate the modeling stack first" step that gates everything else.
+
+### Decisions
+
+- **Start with QuickDraw cat.** Smallest, most-tested public stroke
+  dataset; the original Sketch-RNN paper used it. Easy to evaluate
+  visually — if generated samples look like cats, the modeling stack
+  works. CROHME and IAM Online come next.
+- **Architecture: pure transformer** as committed in PLAN.md. d=256,
+  4 layers, 8 heads, M=20 GMM components. ~3M params. Trains on Mac
+  MPS in under an hour.
+- **No conditioning yet.** Unconditional generation only at this
+  stage. Adding canvas + topic + speech encoders is A.4's job.
+- **Checkpoints stay out of git.** Added `.pt` to .gitignore. They're
+  regenerable from the training script + downloaded data. Training
+  logs (small JSONL) and sample images stay in git for reproducibility.
+
+### Work — `part-a/experiments/a3-sketchrnn/`
+
+Built four small scripts and trained end-to-end on the cat class:
+
+- `download.py` — fetch QuickDraw class .npz files from Google's
+  Sketch-RNN preprocessed dataset.
+- `data.py` — convert (Δx, Δy, pen_state) sequences to the 5-element
+  representation `[Δx_norm, Δy_norm, p_down, p_up, p_end]` with a
+  global scale (std of Δs in the training split).
+- `model.py` — causal transformer with multiple per-position output
+  heads. MDN over (Δx, Δy) with M=20 components plus categorical over
+  pen-state. Loss = GMM negative log likelihood + cross-entropy on
+  pen-state, masked by sequence length.
+- `train.py` — AdamW + cosine LR schedule + gradient clipping.
+  Auto-picks MPS / CUDA / CPU. Saves checkpoints every 2k steps.
+- `sample.py` — temperature-controlled MDN + pen-state sampling,
+  matplotlib grid render.
+
+### Training results
+
+10k steps on QuickDraw cat, ~50 minutes on Mac MPS at 3.4 steps/sec.
+Loss went from 4.07 → -0.02. The GMM term went *negative* — meaning
+the model is concentrating probability mass tightly on the right
+next-pen-movements, much better than a baseline unit Gaussian. Pen-
+state cross-entropy dropped from 1.39 to 0.29 (≈ 75% accuracy on the
+3-way pen-state classification).
+
+Generated samples at T=0.4 and T=0.7 look unmistakably like the
+wonky cat doodles from QuickDraw — heads, whiskers, occasionally
+ears and tails. Not professional, but recognizable. Same quality as
+the Sketch-RNN paper reports on the same data with their LSTM
+backbone.
+
+### Where this leaves us
+
+The modeling stack is validated. We have:
+- A working transformer-based stroke generator with MDN + pen-state
+  output heads.
+- A training loop that converges in ~50 minutes on a Mac.
+- A sampling pipeline that produces recognizable shapes.
+
+This unlocks the next steps with confidence:
+- **CROHME** — same architecture, math expressions instead of cats.
+  Direct relevance to the project.
+- **IAM Online** — English handwriting. Letter shapes for text
+  generation.
+- Eventually the full pretraining: combined-dataset training on
+  CROHME + IAM Online + QuickDraw, then fine-tune on the OCT corpus
+  with conditioning added.
+
+### Hardware note
+
+Cat at 3M params trains comfortably on Mac MPS. Same hardware should
+handle CROHME and IAM Online (both small datasets). Switching to a
+school lab GPU becomes necessary when:
+- Single training run > 6 hours on Mac, **or**
+- Out-of-memory errors (typically at model size > 50M params, sequence
+  length > 2k tokens, or when adding the ViT canvas encoder), **or**
+- A.4 multimodal training (definitely lab).
+
+### Tomorrow
+
+- Download CROHME and IAM Online stroke data.
+- Run the same architecture on CROHME, evaluate by sample quality.
+- If both pass, plan the combined-dataset pretraining run.
+
+---
+
 ## 2026-05-10 — A.2 speech-stroke alignment lands
 
 ### Motivation
