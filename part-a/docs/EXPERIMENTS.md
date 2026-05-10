@@ -171,7 +171,7 @@ sample grid, RESULTS.md.
 
 ---
 
-## Experiment A.4 — Multimodal Method A model (three variants)
+## Experiment A.4 — Multimodal Method A model
 
 ### Question
 **Can a stroke-level autoregressive model conditioned on (canvas
@@ -179,17 +179,29 @@ image, topic, prior speech, prior strokes) generate a coherent math
 lesson — beating the A.0 frontier-VLM baseline on coherence and
 matching it on speed/cost?**
 
-This is the project goal. We train **three variants in parallel**,
-one per token-granularity option from
-[PLAN.md](PLAN.md#token-granularity-options):
+This is the project goal. The variants from
+[PLAN.md](PLAN.md#token-granularity-options) are run in this order:
 
-- **A.4a — Stroke-anchored** (token = stroke + words spoken during it)
-- **A.4b — Word-anchored** (token = word + strokes drawn while said)
-- **A.4c — Symbol-anchored** (token = symbol + words at that moment;
-  requires HMR labeling, see "Prerequisite for A.4c" below)
+- **A.4a-1 — Stroke-anchored, MathWriting → 5 h OCT fine-tune** (immediate active target).
+  Uses `mathwriting.final.pt` (from A.3) as the backbone, adds canvas
+  / topic / speech encoders + cross-attention + word head + page-break
+  head, fine-tunes on ~5 hours of extracted OCT events.jsonl. This is
+  the standard general → specific transfer-learning order, viable at
+  the OCT scale we can realistically reach in the short term.
+- **A.4a-2 — Stroke-anchored, OCT 50 h base → MathWriting refinement** (later).
+  Once OCT corpus is scaled to ~50 hours, train from scratch on OCT
+  with full conditioning, then a light MathWriting fine-tune for
+  stroke-quality refinement (rehearsal / low LR to avoid forgetting).
+  Better distribution match for the final task; only feasible at
+  scale.
+- **A.4b — Word-anchored on Qwen-Math** (eventually). Practical
+  alternative: pretrained math LLM + stroke decoder head. Working-
+  system fallback and language-prior comparison.
+- **A.4c — Symbol-anchored** (last; requires HMR labeling pipeline,
+  see A.3.5).
 
-A.4a is the recommended starting variant — minimal data preprocessing
-beyond A.1/A.2, cleanest match to Sketch-RNN.
+A.4a-1 is the active build target. A.4a-2 becomes feasible only after
+OCT corpus growth.
 
 ### Common architecture
 
@@ -219,10 +231,14 @@ short:
   CROHME + IAM → multimodal fine-tune on KA + OCT).
 
 ### Per-variant data preparation
-- **A.4a**: directly consumes A.2's interleaved (stroke, word)
-  sequences.
+- **A.4a-1**: directly consumes A.2's interleaved (stroke, word)
+  sequences. Backbone weights from `mathwriting.final.pt`. New
+  conditioning layers initialize fresh.
+- **A.4a-2**: same A.2 sequences, but training is from scratch on
+  ~50 h of OCT data (no MathWriting backbone). MathWriting strokes
+  are added as a refinement fine-tune in stage 2.
 - **A.4b**: same data, regrouped — words become the top-level units,
-  strokes become attached payloads.
+  strokes become attached payloads. Backbone weights from Qwen-Math.
 - **A.4c**: requires an additional preprocessing pass over A.2's
   output to label which strokes group into which symbol. Pipeline:
   segment the stroke sequence at probable symbol boundaries (large
@@ -250,13 +266,16 @@ A variant is "shipped" if it hits these. We compare across variants
 to identify which approach generalizes best.
 
 ### Deliverables
-- `experiments/a4a-stroke-anchored/`
-- `experiments/a4b-word-anchored/`
-- `experiments/a4c-symbol-anchored/`
+- `experiments/a4a-1-stroke-anchored-mw-pretrain/` — MathWriting →
+  OCT 5 h, the immediate target.
+- `experiments/a4a-2-stroke-anchored-oct-pretrain/` — OCT 50 h →
+  MathWriting refinement, after corpus growth.
+- `experiments/a4b-word-anchored/` — Qwen-Math backbone, eventually.
+- `experiments/a4c-symbol-anchored/` — last, gated on A.3.5.
 
 Each contains training code, checkpoints, eval, sample recordings,
-`RESULTS.md`. A top-level `experiments/a4-comparison.md` compares all
-three against A.0.
+`RESULTS.md`. A top-level `experiments/a4-comparison.md` compares
+across variants against A.0.
 
 ---
 

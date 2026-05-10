@@ -215,24 +215,69 @@ math priors borrowed in.
 
 ### Decision
 
-**We will pursue both eventually. Order: stroke-anchored first, then
-word-anchored.**
+**Order: stroke-anchored first, in two sub-stages, then word-anchored.**
 
-Rationale:
-- Stroke-anchored is the harder path but the more novel research
-  contribution. Doing it first establishes the dataset and the joint
-  generation infrastructure on the most-restrictive case; word-
-  anchored on Qwen-Math reuses the same data and pipeline.
-- If stroke-anchored fails or hits a ceiling, word-anchored is the
-  fallback — and it's likely to succeed because of the Qwen-Math
-  prior.
-- If stroke-anchored succeeds, comparing it to word-anchored becomes
-  a clean ablation about whether language priors help or hurt
-  teacher-style joint generation.
+The motivation for going stroke-anchored first is *not* that it's the
+optimal architecture — it's that the project's real signal is OCT
+teacher video. We want a model trained from real teacher data as the
+backbone, not a language model with strokes bolted on. A.4a is the
+"OCT-based model" path; A.4b (Qwen-Math + stroke head) comes later as
+the practical high-quality alternative.
 
-A.4a (stroke-anchored) is the active build target; A.4b (word-
-anchored on Qwen-Math) is the next-up variant. A.4c (symbol-anchored)
-remains gated on A.3.5 and is the longest-tail variant.
+Within A.4a there are two sub-stages, gated by how much OCT data
+we've extracted:
+
+#### A.4a-1 — MathWriting pretrain → OCT 5h fine-tune (immediate)
+
+```
+Stage 1: A.3 stroke model (DONE — mathwriting.final.pt)
+            knows: how to draw math at all
+                          ↓
+Stage 2: + canvas / topic / speech encoders + cross-attention,
+         + word head + page-break head,
+         fine-tune on ~5 hours of OCT events.jsonl
+            adds: joint behavior, conditioning, pedagogy
+            target: a working tutor model on a moderate corpus
+```
+
+This is the "general → specific" transfer-learning recipe. The
+MathWriting prior provides clean stroke geometry; the OCT fine-tune
+adds joint speech+stroke behavior, canvas conditioning, and tutor-
+style pacing. Standard transfer-learning order.
+
+#### A.4a-2 — OCT 50h pretrain → MathWriting refinement (later)
+
+```
+Stage 1: train from scratch on ~50 hours of extracted OCT data
+            knows: joint speech+stroke behavior, tutor pedagogy,
+                   canvas/topic conditioning
+                   + rough math handwriting (extracted-quality)
+                          ↓
+Stage 2: light fine-tune on MathWriting strokes
+            adds: stroke quality refinement
+            (uses rehearsal / low LR to avoid forgetting OCT lessons)
+```
+
+Why we'll flip the order at scale: pretraining sets the model's
+prior, and the prior should ideally match the target task. The target
+task IS OCT-style joint generation. Pretraining on the matched
+distribution removes the domain shift that A.4a-1 has between
+MathWriting (clean stylus, no speech) and OCT (extracted from video,
+joint with speech). A.4a-2 only becomes feasible once OCT is large
+enough to learn handwriting from scratch — about 50 hours by current
+estimates.
+
+#### Order summary
+
+| When | Variant | Why |
+|---|---|---|
+| Now (corpus ~5 h) | **A.4a-1** | Standard pretrain→fine-tune order; works at this scale |
+| After scaling OCT to ~50 h | **A.4a-2** | Better distribution match; higher quality ceiling |
+| Eventually | **A.4b** | Practical alternative on Qwen-Math, for comparison and as a working-system fallback |
+| Last | **A.4c** | Symbol-anchored, gated on HMR pipeline (A.3.5) |
+
+A.4a-1 is the active build target. The MathWriting checkpoint
+(`mathwriting.final.pt`) feeds it as the backbone.
 
 ## Conditioning inputs
 
@@ -337,15 +382,15 @@ events.
 
 ## Milestones
 
-| # | Milestone | Decides |
-|---|---|---|
-| **A.0** | **Frontier-VLM baseline (SketchAgent-style)** | Quantitative baseline for "no-training" performance — the bar a trained model has to beat |
-| **A.1** | **Stroke extraction pilot** (1 KA video + 1 OCT video) | Whether stroke recall is high enough to train on the full corpus |
-| **A.2** | **Speech-stroke alignment** | Whether Whisper word timestamps can be aligned with extracted strokes accurately |
-| **A.3** | **Sketch-RNN baseline** trained on extracted strokes only (no speech, no canvas image) | Whether the data is learnable at the most basic level — sanity check |
-| **A.4a / A.4b / A.4c** | **Multimodal Method A model — three variants in parallel, one per token-granularity option** (stroke-anchored / word-anchored / symbol-anchored) | Whether Method A actually works, and which token granularity is best |
-| **A.5** | **Closed-loop deployment** — model wired into Part B's player, real-time generation | Whether latency/coherence is good enough for use |
-| **A.6** | **(Stretch) RL with student-feedback signal** | Future research |
+| #                      | Milestone                                                                                                                                        | Decides                                                                                   |
+| ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------- |
+| **A.0**                | **Frontier-VLM baseline (SketchAgent-style)**                                                                                                    | Quantitative baseline for "no-training" performance — the bar a trained model has to beat |
+| **A.1**                | **Stroke extraction pilot** (1 KA video + 1 OCT video)                                                                                           | Whether stroke recall is high enough to train on the full corpus                          |
+| **A.2**                | **Speech-stroke alignment**                                                                                                                      | Whether Whisper word timestamps can be aligned with extracted strokes accurately          |
+| **A.3**                | **Sketch-RNN baseline** trained on extracted strokes only (no speech, no canvas image)                                                           | Whether the data is learnable at the most basic level — sanity check                      |
+| **A.4a / A.4b / A.4c** | **Multimodal Method A model — three variants in parallel, one per token-granularity option** (stroke-anchored / word-anchored / symbol-anchored) | Whether Method A actually works, and which token granularity is best                      |
+| **A.5**                | **Closed-loop deployment** — model wired into Part B's player, real-time generation                                                              | Whether latency/coherence is good enough for use                                          |
+| **A.6**                | **(Stretch) RL with student-feedback signal**                                                                                                    | Future research                                                                           |
 
 A.1 and A.2 are the **critical path**. A.3 validates that the data is
 learnable in isolation. A.4 is the actual goal. A.0 is run in parallel
