@@ -5,450 +5,289 @@ things ended up. Newest entries on top.
 
 ---
 
-## 2026-05-10 (even later) — A.3: math stroke model trained, expected scribbles
+## 2026-05-09 (Saturday) — A.3: training the stroke model
 
 ### Motivation
 
-Track 2 cat validated the modeling stack. Time to move A.3 from a
-smoke test on cats to actual math-stroke pretraining — the checkpoint
-that A.4 will inherit.
+Yesterday ended with a working data pipeline (a1 + a2). The natural
+next move would have been to keep growing the corpus, but inspecting
+the algebra reconstruction surfaced a nagging worry: the strokes we
+extract from video have a hard quality ceiling. No amount of more
+videos fixes that. The plan in PLAN.md already had the answer — pretrain
+on clean public stroke data, then fine-tune on extracted teacher data.
+Today was the day to actually do that pretraining step (A.3).
 
-### Dataset decisions, in sequence
+The goal: take the architecture committed in PLAN.md (a transformer
+with MDN and pen-state heads), train it on real handwritten math, and
+produce a checkpoint that A.4 can inherit as its backbone.
 
-The plan in PLAN.md called for CROHME + IAM Online + QuickDraw. We
-revised to a leaner set:
+### Decisions made along the way
 
-- **QuickDraw cats**: kept as the smoke test. Already done.
-- **CROHME**: original target. Official hosting (isical.ac.in) is now
-  404'd; mirrors are gated, image-only (CoMER's `data.zip` had only
-  PNGs and label graphs, no strokes), or hidden behind HuggingFace
-  auth. CROHME is effectively unobtainable through automated routes
-  in 2026.
-- **MathWriting (Google 2024)**: discovered while probing for CROHME
-  alternatives. Publicly hosted on Google Cloud Storage, CC BY-NC-SA
-  licensed, **229k human-handwritten** math expressions in InkML
-  format with stylus precision. Larger and cleaner than CROHME would
-  have been. Pivoted to it.
-- **IAM Online**: dropped. The OCT teacher mostly writes math symbols,
-  not English sentences. CROHME-equivalent (now MathWriting) covers
-  the variables and short letter labels we need.
-- **SketchAgent synthetic**: skipped permanently. Frontier-VLM math
-  sketching is wonky; bias risk; defeats the "learn from real
-  handwriting" premise.
+A few things were decided as I went:
 
-Final A.3 dataset: MathWriting `train/` only (229,864 expressions).
+- **Validate first, scale later.** Before training on math, run a tiny
+  smoke test on something easy. QuickDraw cat (Sketch-RNN's original
+  testbed) is the obvious choice — single class, well-known, and you
+  can tell visually whether the model is working.
+- **Drop QuickDraw and IAM Online from the broader pretraining plan.**
+  QuickDraw cats are unrelated to math; IAM Online is English text the
+  OCT teacher doesn't actually write. CROHME-equivalent on its own
+  should give the math-symbol stroke priors we need.
+- **CROHME → MathWriting.** CROHME's official hosting is dead in 2026.
+  Every accessible mirror is image-only or auth-gated. Found Google's
+  MathWriting (2024) instead — a publicly hosted, CC-licensed dataset
+  of 229k human-handwritten math expressions. Larger and cleaner than
+  CROHME would have been. Pivoted.
+- **Skip SketchAgent synthetic data permanently.** Frontier-VLM
+  sketching of math is wonky; training on it would teach the model to
+  imitate Claude's bad drawings, not real teachers. Defeats the
+  research premise.
+- **No conditioning yet.** A.3 is unconditional generation only. The
+  conditioning (canvas image, topic, speech) is A.4's job.
 
-### Work — `part-a/experiments/a3-sketchrnn/`
+### Work
 
-- `data_mathwriting.py`: parses InkML `<trace>` elements into per-
-  stroke (x, y) sequences, concatenates strokes with pen-up bridge
-  points, converts to the same 5-element representation as the
-  QuickDraw loader (`Δx_norm, Δy_norm, p_down, p_up, p_end`). The
-  same `model.py` and `train.py` work unchanged.
-- `viz_data.py`: renders raw InkML samples to a grid for sanity
-  inspection. Confirmed the data is clean, real handwriting — every
-  panel is a different math expression with sub-pixel strokes.
-- `train.py`: added `--dataset {quickdraw,mathwriting}` flag.
+Built the modeling stack in `part-a/experiments/a3-sketchrnn/`:
 
-### Training results
+- `download.py` to fetch QuickDraw .npz files
+- `data.py` for QuickDraw, `data_mathwriting.py` for MathWriting's InkML
+- `model.py` — the transformer with MDN and pen-state heads (~3.3M
+  params), implementing the MDN loss from the Sketch-RNN paper
+- `train.py` — AdamW + cosine LR, picks MPS / CUDA / CPU automatically
+- `sample.py` — temperature-controlled generation + matplotlib grid
+- `viz_data.py` — renders raw training samples for sanity inspection
 
-10,000 steps on MathWriting (`max_len=400, batch=32`, ~70 min on
-Mac MPS at 2.3–2.7 it/s). Loss progression:
+**Cat smoke test (50 min on Mac MPS).** 10,000 steps on QuickDraw cat.
+Loss dropped from 4.07 to about -0.02. Generated samples at T=0.4
+look clearly like cats — heads, ears, whiskers, tails. Not
+professional-looking, but unmistakably cats. The modeling stack is
+working.
 
-| Metric | Step 1 | Step 10,000 | Cat run end |
-|---|---|---|---|
-| Total loss | 3.58 | **−2.85** | −0.02 |
-| GMM (Δ-prediction) | 2.46 | −2.87 | −0.31 |
-| Pen-state CE | 1.11 | 0.021 (≈98% pen-state acc) | 0.29 |
+**MathWriting pretraining (70 min on Mac MPS).** 10,000 steps on the
+229k human-written math expressions. Loss dropped from 3.58 to
+-2.85. Pen-state classification reached about 98% accuracy. Training
+sped past the cat numbers because math handwriting has more
+structure than freehand cat drawings, and longer sequences give more
+learning signal per sample.
 
-Math handwriting fits much tighter than cat — math expressions have
-more local structure (digit / letter shapes are stable, math symbols
-are stereotyped) than freehand cat doodles. The loss numbers reflect
-this; they aren't directly comparable across datasets but the trend
-is clear.
-
-### Sample inspection — and the lesson
-
-We sampled 16 expressions at T=0.7, T=0.4, T=0.2. They all look like
-**math-flavored gibberish** — strokes that have the cadence and
-density of human math handwriting, but don't form recognizable
+**Sample inspection — and a useful surprise.** When I sampled
+unconditional outputs at three temperatures (0.2, 0.4, 0.7), they all
+came out as math-flavored gibberish. Strokes that have the cadence
+and density of human math handwriting, but no recognizable
 expressions.
 
-This was initially confusing — cat samples looked like cats; why
-don't math samples look like math? The answer:
+That was confusing at first — cat samples looked like cats; why
+don't math samples look like math? The reason clicked when I thought
+about prototype shapes. Cats have one (head + body + ears). Math
+doesn't — every training sample is a *different* unique expression.
+An unconditional model on diverse data can only learn the *aggregate*
+appearance, which for math handwriting is "small loops, varying
+baseline, occasional structural elements." That's exactly what came
+out.
 
-- **Cat** has a strong prototype shape (head + body + ears + tail).
-  A model trained unconditionally on cats can produce average-cat-
-  shaped outputs because there's a single prototype.
-- **Math** has no prototype. Every training sample is a *different*
-  unique expression. Unconditional generation produces the aggregate
-  appearance of math handwriting — small loops, varying baseline,
-  occasional structural elements — without any specific expression.
-
-This is the expected behavior of a well-trained unconditional model
-on diverse data. The model learned **how** to write math (stroke
-dynamics, pen-up timing, math-style aesthetics), but not **what**
-to write. The "what" comes from conditioning, which A.4 adds via
-canvas + topic + speech inputs.
+So this is the expected behavior of a healthy unconditional model on
+diverse data. The model has learned **how** to write math (stroke
+dynamics, pen-up timing, math aesthetics), but not **what** to write
+— that's the job of conditioning, which A.4 adds.
 
 The numbers confirm the model is healthy: tight per-step prediction,
-98% pen-state accuracy, strokes terminate cleanly, no infinite loops.
-A.3's role — stroke-knowledgeable backbone for A.4 — is fulfilled.
-
-### What we did not do
-
-- Did not condition on the LaTeX labels in MathWriting. Each .inkml
-  file has a `normalizedLabel` field; we ignored it. A label-
-  conditioned mid-stage (between A.3 unconditional and A.4 full
-  multimodal) is a possible future experiment if A.4 needs more
-  stepping stones.
+high pen-state accuracy, strokes terminate cleanly, no infinite
+loops. A.3's role — be the stroke-knowledgeable backbone for A.4 —
+is fulfilled.
 
 ### Where this leaves us
 
 - ✅ A.3 checkpoint: `mathwriting.final.pt` (~3.3M params, 13 MB).
-  Stroke priors learned from 229k human-written math expressions.
-- → A.4 inherits this checkpoint as the transformer backbone.
-- ⚠️ Before A.4, OCT corpus needs to grow from ~37 min to several
-  hours. A.4 itself probably needs a school-lab GPU.
+- → This file is the input to A.4 — its weights become the backbone
+  of the multimodal fine-tuning.
+- ⚠️ Before A.4 is meaningful, the OCT corpus needs to grow from
+  ~37 minutes to several hours.
+- ⚠️ A.4 itself probably needs a school-lab GPU.
 
 ### Tomorrow
 
-- Scale OCT corpus (more videos, more topics).
-- Confirm school-lab GPU access.
-- Plan the A.4 architecture: which weights load from A.3, which
-  layers are added fresh (canvas encoder, cross-attention, word head,
-  page-break head), how the events.jsonl streams turn into training
-  batches.
+- Decide on school-lab access logistics.
+- Scale OCT corpus by adding more tablet-tutor videos.
+- Plan A.4 architecture concretely: which weights load from A.3,
+  which layers (canvas encoder, cross-attention, word head,
+  page-break head) start fresh, and how `events.jsonl` from a1+a2
+  becomes training batches.
 
 ---
 
-## 2026-05-10 (later) — Track 2: stroke transformer trains, makes cat-like cats
+## 2026-05-08 (Friday) — A.1 stroke extraction and A.2 speech-stroke alignment
 
 ### Motivation
 
-After A.2 landed, scaling the OCT corpus would have been the obvious
-next move. But noticing the chaotic algebra reconstruction surfaced a
-deeper concern: video-extracted stroke quality has a hard ceiling.
-The fix is the staged pretraining strategy already in PLAN.md —
-pretrain on clean public stroke datasets (where strokes were captured
-directly, sub-pixel precision), then fine-tune on extracted teacher-
-video data for the joint speech-stroke behavior. Track 2 is the
-"validate the modeling stack first" step that gates everything else.
-
-### Decisions
-
-- **Start with QuickDraw cat.** Smallest, most-tested public stroke
-  dataset; the original Sketch-RNN paper used it. Easy to evaluate
-  visually — if generated samples look like cats, the modeling stack
-  works. CROHME and IAM Online come next.
-- **Architecture: pure transformer** as committed in PLAN.md. d=256,
-  4 layers, 8 heads, M=20 GMM components. ~3M params. Trains on Mac
-  MPS in under an hour.
-- **No conditioning yet.** Unconditional generation only at this
-  stage. Adding canvas + topic + speech encoders is A.4's job.
-- **Checkpoints stay out of git.** Added `.pt` to .gitignore. They're
-  regenerable from the training script + downloaded data. Training
-  logs (small JSONL) and sample images stay in git for reproducibility.
-
-### Work — `part-a/experiments/a3-sketchrnn/`
-
-Built four small scripts and trained end-to-end on the cat class:
-
-- `download.py` — fetch QuickDraw class .npz files from Google's
-  Sketch-RNN preprocessed dataset.
-- `data.py` — convert (Δx, Δy, pen_state) sequences to the 5-element
-  representation `[Δx_norm, Δy_norm, p_down, p_up, p_end]` with a
-  global scale (std of Δs in the training split).
-- `model.py` — causal transformer with multiple per-position output
-  heads. MDN over (Δx, Δy) with M=20 components plus categorical over
-  pen-state. Loss = GMM negative log likelihood + cross-entropy on
-  pen-state, masked by sequence length.
-- `train.py` — AdamW + cosine LR schedule + gradient clipping.
-  Auto-picks MPS / CUDA / CPU. Saves checkpoints every 2k steps.
-- `sample.py` — temperature-controlled MDN + pen-state sampling,
-  matplotlib grid render.
-
-### Training results
-
-10k steps on QuickDraw cat, ~50 minutes on Mac MPS at 3.4 steps/sec.
-Loss went from 4.07 → -0.02. The GMM term went *negative* — meaning
-the model is concentrating probability mass tightly on the right
-next-pen-movements, much better than a baseline unit Gaussian. Pen-
-state cross-entropy dropped from 1.39 to 0.29 (≈ 75% accuracy on the
-3-way pen-state classification).
-
-Generated samples at T=0.4 and T=0.7 look unmistakably like the
-wonky cat doodles from QuickDraw — heads, whiskers, occasionally
-ears and tails. Not professional, but recognizable. Same quality as
-the Sketch-RNN paper reports on the same data with their LSTM
-backbone.
-
-### Where this leaves us
-
-The modeling stack is validated. We have:
-- A working transformer-based stroke generator with MDN + pen-state
-  output heads.
-- A training loop that converges in ~50 minutes on a Mac.
-- A sampling pipeline that produces recognizable shapes.
-
-This unlocks the next steps with confidence:
-- **CROHME** — same architecture, math expressions instead of cats.
-  Direct relevance to the project.
-- **IAM Online** — English handwriting. Letter shapes for text
-  generation.
-- Eventually the full pretraining: combined-dataset training on
-  CROHME + IAM Online + QuickDraw, then fine-tune on the OCT corpus
-  with conditioning added.
-
-### Hardware note
-
-Cat at 3M params trains comfortably on Mac MPS. Same hardware should
-handle CROHME and IAM Online (both small datasets). Switching to a
-school lab GPU becomes necessary when:
-- Single training run > 6 hours on Mac, **or**
-- Out-of-memory errors (typically at model size > 50M params, sequence
-  length > 2k tokens, or when adding the ViT canvas encoder), **or**
-- A.4 multimodal training (definitely lab).
-
-### Tomorrow
-
-- Download CROHME and IAM Online stroke data.
-- Run the same architecture on CROHME, evaluate by sample quality.
-- If both pass, plan the combined-dataset pretraining run.
-
----
-
-## 2026-05-10 — A.2 speech-stroke alignment lands
-
-### Motivation
-
-A.1 gives us clean stroke trajectories for OCT-style content. The
-training-shaped data format we ultimately want is an interleaved
-event stream: words and pen events together, sorted by time. A.2 is
-the bridge — run speech-to-text on the audio, get word-level
-timestamps, and merge them with the stroke timestamps from A.1.
-
-### Decisions
-
-- **STT backend**: `faster-whisper` (CTranslate2-based). Apple Silicon
-  friendly, supports word-level timestamps natively, fast on CPU at
-  int8 quantization. The original `openai-whisper` package would also
-  work but is slower.
-- **Model size**: `small` (244 MB) as the default. The OCT tutor
-  speaks clearly and at moderate pace; small is sufficient for word
-  boundaries within ~100–200 ms. We can swap in `medium` if systematic
-  alignment errors show up later.
-- **Event schema**: a single time-ordered JSONL of `word`, `pen`, and
-  `stroke_end` events. `pen` events carry `(x, y, t, stroke_id, first/
-  last_in_stroke)`. This is the shape the downstream training data
-  takes — the same schema feeds whichever token-granularity variant we
-  train (stroke-anchored A.4a, word-anchored A.4b, or symbol-anchored
-  A.4c). Format decisions stay consistent across the variants.
-- **Layout**: new directory `part-a/experiments/a2-alignment/` with
-  three small scripts: `stt.py` (audio → words.jsonl), `merge.py`
-  (a1 strokes + a2 words → events.jsonl), `viz_events.py` (animated
-  strokes plus a scrolling caption highlighting the active word).
-
-### Work
-
-Walked through the pipeline end-to-end on the existing OCT 3-minute
-pilot:
-
-1. Installed `faster-whisper`. Whisper-small auto-downloads the model
-   (no API keys, fully local). Total install time on top of the
-   existing a1 venv: ~30 seconds.
-2. `stt.py oct --duration 180` produced 425 word events in 53 seconds
-   of CPU inference. Detected language `en` with probability 1.00.
-   ~142 words per minute — believable for a tutor speaking at a
-   teaching pace.
-3. `merge.py oct` produced a 1442-event time-ordered JSONL
-   interleaving 425 word events, 880 pen events, and 137 stroke_end
-   events.
-4. `viz_events.py oct` renders an mp4 that combines the smoothed
-   stroke reconstruction from A.1 with a scrolling caption bar at the
-   bottom showing recently spoken words. The current spoken word is
-   highlighted in cyan above the caption.
-
-### Eyeball validation
-
-When the caption reads "It's A squared plus B squared is equal to C
-squared", the canvas shows the equation `a² + b² = c²` being written
-in real time. Small symbols and superscripts land at the moments the
-corresponding words are spoken. Long-running silent periods correctly
-have no word events. Stretches with both speaking and writing have
-both event types interleaved smoothly.
-
-### Where this leaves us
-
-A.1 + A.2 together produce, per video, a clean training-shaped event
-stream:
-
-```
-videos/<tag>.mp4
-  │
-  ├─ a1: extract.py  → strokes.jsonl   (137 strokes / 3 min)
-  ├─ a2: stt.py      → words.jsonl     (425 words / 3 min)
-  └─ a2: merge.py    → events.jsonl    (1442 events, time-ordered)
-```
-
-Pipeline is ready to scale. The next bottleneck is corpus size — we
-have one OCT video; we want at least a few hours.
-
-### Tomorrow
-
-Two parallel tracks:
-
-- **Corpus growth**: pick 3–5 more OCT-style videos, run them through
-  a1+a2, validate by reconstruction + caption alignment, accept those
-  that pass. Aim for ~3 hours of clean event data.
-- **A.3 baseline preparation**: download CROHME and IAM Online
-  datasets, set up a small Sketch-RNN training script. This is the
-  modeling-stack validation step — train an unconditional stroke
-  generator on public data while the corpus grows in parallel.
-
----
-
-## 2026-05-09 — A.1 stroke-extraction baseline lands
-
-### Motivation
-
-Part A is the research arm of the project: a trained model that generates
-math and text strokes on a virtual blackboard, alongside spoken
-explanations, learned from real teacher videos. The goal of today was to
-(a) absorb two recent papers that bear directly on this problem, (b)
-crystallize the architecture and training plan enough to act on, and (c)
-actually start the data pipeline so we have something to train on.
+Part A is the research arm of the project: a trained model that
+generates math and text strokes on a virtual blackboard, alongside
+spoken explanations, learned from real teacher videos. Today was about
+(a) absorbing two recent papers that bear directly on this problem,
+(b) getting the architecture and training plan crisp enough to act on,
+and (c) actually starting the data pipeline so we have something to
+train on later.
 
 ### Reading
 
 Two papers, cover to cover:
 
 - **Sketch-RNN** (Ha & Eck, 2017). A sequence-to-sequence VAE that
-  generates vector sketches as pen-action sequences `(Δx, Δy, pen-state)`
-  with a Mixture Density Network output head over the offsets. The
-  representation is well-tested and small enough to train. This paper
-  gives us the **output representation** for our trained model.
-- **SketchAgent** (Vinker et al., MIT/Stanford, 2024). A frontier
-  multimodal LLM running in a closed loop, sketching on a numbered grid
-  via a string-based stroke language with Bézier post-processing. No
-  training. This paper gives us the **closed-loop mechanic** and a
+  generates vector sketches as pen-action sequences with a Mixture
+  Density Network output. The representation is well-tested and small
+  enough to train on a laptop. This paper gives us our **output
+  representation**.
+- **SketchAgent** (Vinker et al., MIT/Stanford 2024). A frontier
+  multimodal LLM running in a closed loop, sketching on a numbered
+  grid via a string-based stroke language with Bézier post-processing.
+  No training. This paper gives us the **closed-loop mechanic** and a
   zero-training baseline that any trained model should beat.
 
-Neither paper covers our exact problem (joint stroke + speech generation,
-math content, learned from teacher videos), but together they pin down
-the architectural and methodological priors. We adopt Sketch-RNN's MDN
-output head, drop its LSTM backbone in favor of a transformer, and use
-SketchAgent's closed-loop pattern as the inference-time framework.
+### Decisions made along the way
 
-### Decisions
+- **Token granularity (the unit the model emits per autoregressive
+  step).** Three options exist: stroke-anchored, word-anchored, and
+  symbol-anchored. We will pursue all three eventually. The order is
+  **stroke-anchored first** (the harder, more novel research path),
+  **word-anchored next** (the practical path on top of Qwen-Math),
+  **symbol-anchored last** (gated on building an HMR labeling
+  pipeline).
+- **Architecture: a single causal transformer** with multiple per-
+  position output heads (action-type categorical, word softmax, MDN
+  over offsets, pen-state categorical). No LSTM sub-decoder.
+- **Pretraining strategy.** Training from scratch on KA + OCT data
+  alone would underfit. Plan is staged: warm-start vision and text
+  encoders from pretrained models, pretrain the decoder on public
+  stroke datasets, then fine-tune on extracted teacher-video data.
+- **Data curation policy: OCT-style only for v1.** After running A.1
+  on both Khan Academy and Organic Chemistry Tutor pilots,
+  reconstruction validation showed OCT extracts cleanly while KA
+  cursive flow does not. Defer KA-style content until extraction is
+  better.
+- **Repo: `chalk-talk`** (private) on GitHub.
 
-A handful of decisions crystallized during the day:
+### Work — A.1 stroke-extraction pipeline
 
-1. **Token granularity.** Three options exist for the unit the model
-   emits per autoregressive step: stroke-anchored, word-anchored, or
-   symbol-anchored. We will pursue all three eventually. The order is
-   **stroke-anchored first** (the harder, purer research path), then
-   **word-anchored on Qwen-Math** (the practical path with strong
-   priors), then **symbol-anchored** (requires HMR labeling, slowest to
-   build). The reasoning is recorded in detail in
-   [docs/PLAN.md](docs/PLAN.md).
-2. **Architecture.** A single causal transformer with multiple output
-   heads (action-type categorical, word softmax, MDN over offsets,
-   pen-state categorical). No LSTM sub-decoder. The hierarchy is
-   implicit in the data and structural separator tokens.
-3. **Pretraining strategy.** Training from scratch on KA + OCT alone
-   would underfit — there is no single "stroke transformer" base model
-   to fine-tune. Instead, a staged plan: warm-start vision and text
-   encoders from pretrained models, pretrain the decoder on public
-   stroke datasets (QuickDraw, CROHME, IAM Online), then fine-tune on
-   extracted teacher-video data.
-4. **Repository.** Created `chalk-talk` (private) on GitHub.
+Most of the day went into the stroke-extraction pipeline. The plan
+was: pick one Khan Academy video and one Organic Chemistry Tutor
+video on the same topic (Pythagorean theorem), build a stroke
+extractor, and validate by **reconstruction** — replay the extracted
+strokes alone on a blank canvas, with no original ink underneath, and
+see if the writing is still recognizable. If yes, the data is usable
+for training; if not, the pipeline lost information.
 
-### Work — A.1 stroke-extraction pilot
-
-Most of the day went into the stroke-extraction pipeline. The plan was:
-pick one Khan Academy video and one Organic Chemistry Tutor video on the
-same topic (Pythagorean theorem), build a stroke extractor, and validate
-by **reconstruction** — replay the extracted strokes alone on a blank
-canvas, with no original ink underneath, and see if the writing is
-recognizable. If yes, the data is usable for training; if no, the
-pipeline lost information.
-
-This took many iterations. Each one was instructive about a different
-failure mode:
+This took many iterations. Each one taught me something about a
+different failure mode:
 
 - **v0** — Frame-diff plus centroid plus gap/jump segmentation. The
-  cursor sprite dominated; KA collapsed to a single 30-second "stroke"
-  because the cursor was always present.
-- **v1** — Persistence check: a pixel only counts as ink if it is still
-  bright `LOOKAHEAD` frames later. Cursor problem solved (real ink
-  survives; transient cursor pixels do not). But segmentation went
-  wrong in opposite directions for the two videos: KA cursive flow was
-  under-cut into too few long strokes; OCT slow line-drawing was
-  over-cut into too many fragments. No threshold combination worked
-  for both.
+  cursor sprite dominated; KA collapsed to a single 30-second
+  "stroke" because the cursor was always present.
+- **v1** — Persistence check (a pixel only counts as ink if it's
+  still bright LOOKAHEAD frames later). Cursor problem solved. But
+  segmentation went wrong in opposite directions for the two videos:
+  KA cursive flow was under-cut, OCT slow line-drawing was over-cut.
+  No threshold combination worked for both.
 - **v2** — Replaced gap/jump segmentation with greedy cubic-Bézier-fit
-  segmentation. Better, but the fit-error criterion cuts whenever one
-  cubic can't cover a curve, fragmenting smooth strokes that simply
-  needed multiple cubics chained together.
-- **v3** — Replaced Bézier-fit-error with **cusp detection**: only cut
-  a pen-down run where the trajectory turns sharply. This is the right
-  unit for a stroke boundary. Combined with sticky pen-down (bridge
-  brief detection gaps within a real stroke), v3 produced 137 strokes
-  on 3 minutes of OCT — believable counts.
+  segmentation. Better, but it cuts whenever one cubic can't cover a
+  curve, fragmenting smooth strokes that simply needed multiple
+  cubics chained together.
+- **v3** — Replaced Bézier-fit-error with **cusp detection**: cut a
+  pen-down run only where the trajectory turns sharply, not where the
+  math says one cubic isn't enough. Combined with sticky pen-down,
+  v3 gave 137 strokes on 3 minutes of OCT — believable.
 - **Reconstruction validation.** Built `reconstruct.py` to replay
-  strokes on a blank canvas, the honest test. OCT reconstructions were
-  recognizably the original writing. KA reconstructions were not.
-  **We curated the v1 corpus down to OCT-style content only**, deferring
-  KA-style until extraction is good enough for cursive.
+  strokes on a blank canvas — the honest test. OCT reconstructions
+  were recognizable. KA reconstructions were not. Curated v1 down to
+  OCT-style content only.
 - **v4–v8** — Several creative attempts to clean up residual phantom
-  strokes: net pixel-growth detection, shape-based component filtering,
-  size-band line filtering, dot/cursor-blob filter on `new_persist`.
-  None matched v3 quality; some were considerably worse.
-- **The diagnostic moment.** Inspecting v3's reconstruction at a higher
-  zoom revealed that residual phantom long lines were not coming from
-  the cursor. They "popped" — the algorithm was bridging two distant
-  centroids inside one pen-down run, drawing a straight line across
-  blank canvas. The cause was sticky pen-down keeping the run open
-  across two separate physical strokes that happened to fall within
-  the sticky window.
+  strokes: net pixel-growth detection, shape-based component
+  filtering, size-band line filtering, dot/cursor-blob filter on
+  `new_persist`. None matched v3 quality.
+- **The diagnostic moment.** Inspecting v3 at higher zoom revealed
+  that residual phantom long lines were not coming from the cursor.
+  They "popped" between distant points — the algorithm bridging two
+  separate physical strokes inside one sticky window.
 - **The principled fix — path verification.** Before appending point
   B to a run that ended at A, sample the straight line A→B against
   the current persistent ink mask. If at least 40% of the sampled
   pixels lie on existing ink, the line is a real continuous stroke;
-  if it goes through blank canvas, it is a fake bridge. Commit the
-  current run and start a new one with B in that case. This uses
-  ground-truth ink rather than a distance heuristic. It cleaned up
+  if it goes through blank canvas, it is a fake bridge. This used
+  ground-truth ink rather than a distance heuristic. Cleaned up
   phantom long lines decisively while leaving real strokes intact.
-- **Tiny-letter capture.** Dropped `MIN_NEW_INK_PIXELS` from 2 to 1 so
-  small careful strokes (superscripts, decimal-point-like marks)
-  produce a centroid each frame instead of being filtered as noise.
-- **Reconstruction smoothing.** `reconstruct.py` now applies Chaikin's
-  algorithm (two iterations of corner-cutting, approximating a
-  quadratic B-spline) per stroke before drawing. The output looks like
+- **Tiny-letter capture.** Dropped `MIN_NEW_INK_PIXELS` from 2 to 1
+  to capture small careful strokes (superscripts, decimal-like marks).
+- **Reconstruction smoothing.** `reconstruct.py` now applies
+  Chaikin's algorithm (two iterations) per stroke. Output looks like
   flowing handwriting rather than jagged polylines. Cosmetic only —
   does not change the data.
 
-### Where this leaves us
+### Work — corpus growth and page-break detection
 
-A.1 has a working baseline. On 3 minutes of OCT video:
+Once A.1 was working on the pilot, scaled to four videos:
 
-- 1172 frames with raw ink signal (~22% of total)
-- 111 pen-down runs after path-verification splits
-- 137 final strokes after cusp segmentation
+- `oct` (Pythagorean, 3 min cap)
+- `oct-algebra` (Algebra For Beginners, 10 min cap)
+- `oct-fractions` (Adding Fractions, full ~10 min)
+- `oct-geometry` (Lines/Rays/Angles, full ~14 min)
 
-Reconstruction is recognizably the original writing — the equation
-`a² + b² = c²`, the worked steps `5² + 12² = x²` → `25 + 144 = x²` →
-`√169 = √x²` → `13 = x`, both triangles with their `a / b / c / 12 / 5`
-labels. The pipeline is ready to scale to a real OCT-style corpus.
+Built `corpus.json` and `batch.py` to run download → frames →
+extract → STT → merge → reconstruct for each video and produce a
+summary table.
+
+The algebra reconstruction surfaced a new problem that I had ignored:
+the tutor doesn't only write — he also *clears the canvas* between
+problems. Without modeling this, the reconstruction accumulated
+every stroke ever drawn into one overlapping mess.
+
+Wrote `pages.py` to detect canvas-clear events from sudden drops in
+inked-pixel count (current ink less than 30% of previous ink over
+~1 second). Updated `merge.py` to emit `page_break` events into the
+events stream. Updated `reconstruct.py` to clear the canvas at each
+page break and only render strokes from the current page.
+
+Detected page-breaks per video:
+
+- `oct` (3 min): 0 (he never cleared in the pilot window — correct)
+- `oct-algebra`: 6
+- `oct-fractions`: 8
+- `oct-geometry`: 10
+
+After this fix, the algebra reconstruction shows seven distinct
+problems in sequence, each on a fresh canvas, each readable.
+
+### Work — A.2 speech-stroke alignment
+
+A.1 gives clean stroke trajectories per video. A.2 brings in the
+audio side: run Whisper STT on each video, get word-level
+timestamps, and merge them with the stroke timestamps from A.1 into
+a single time-ordered event stream.
+
+Built `part-a/experiments/a2-alignment/`:
+
+- `stt.py` — `faster-whisper` (CTranslate2-based) at int8 on CPU,
+  word-level timestamps. Default model: `small` (244 MB), enough for
+  clear teacher speech.
+- `merge.py` — combines a1 strokes + a2 words + page breaks into a
+  single time-ordered `events.jsonl`.
+- `viz_events.py` — animated stroke reconstruction with a scrolling
+  caption bar; the currently-spoken word is highlighted.
+
+Pilot result on the OCT 3-minute Pythagorean theorem video: 425
+words, 880 pen events, 137 stroke ends — 1442 events total. The
+eyeball test passed: when the caption reads "It's A squared plus B
+squared is equal to C squared", the canvas shows the equation
+`a² + b² = c²` being written in the same time window.
+
+### Where this leaves us (end of day Friday)
+
+- ✅ Working a1 + a2 pipeline that produces, per video, a clean
+  training-shaped event stream.
+- ✅ Corpus of 4 OCT-style videos, ~37 minutes total, ~15k events.
+- ✅ Page-break detection so the canvas resets at problem boundaries.
+- ⚠️ Quality of extracted strokes has a hard ceiling — the model
+  trained on this alone would inherit the noise. Need clean public
+  data (CROHME-equivalent) to pretrain on first.
 
 ### Tomorrow
 
-- Decide the corpus size and source list for the v1 dataset (suggested
-  starting target: 3 hours of OCT-style content from OCT itself plus
-  similar tablet-tutor channels).
-- Run extraction on each video and validate by reconstruction; accept
-  videos that pass.
-- Move to **A.2 — speech-stroke alignment**: run Whisper STT on each
-  video, align word-level timestamps with the extracted stroke
-  timestamps to produce the interleaved sequences we need for training.
+- Pretrain a stroke model on clean public math-stroke data (Track 2 /
+  A.3) before scaling the OCT corpus further.
