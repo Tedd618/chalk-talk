@@ -5,6 +5,123 @@ things ended up. Newest entries on top.
 
 ---
 
+## 2026-05-10 (even later) — A.3: math stroke model trained, expected scribbles
+
+### Motivation
+
+Track 2 cat validated the modeling stack. Time to move A.3 from a
+smoke test on cats to actual math-stroke pretraining — the checkpoint
+that A.4 will inherit.
+
+### Dataset decisions, in sequence
+
+The plan in PLAN.md called for CROHME + IAM Online + QuickDraw. We
+revised to a leaner set:
+
+- **QuickDraw cats**: kept as the smoke test. Already done.
+- **CROHME**: original target. Official hosting (isical.ac.in) is now
+  404'd; mirrors are gated, image-only (CoMER's `data.zip` had only
+  PNGs and label graphs, no strokes), or hidden behind HuggingFace
+  auth. CROHME is effectively unobtainable through automated routes
+  in 2026.
+- **MathWriting (Google 2024)**: discovered while probing for CROHME
+  alternatives. Publicly hosted on Google Cloud Storage, CC BY-NC-SA
+  licensed, **229k human-handwritten** math expressions in InkML
+  format with stylus precision. Larger and cleaner than CROHME would
+  have been. Pivoted to it.
+- **IAM Online**: dropped. The OCT teacher mostly writes math symbols,
+  not English sentences. CROHME-equivalent (now MathWriting) covers
+  the variables and short letter labels we need.
+- **SketchAgent synthetic**: skipped permanently. Frontier-VLM math
+  sketching is wonky; bias risk; defeats the "learn from real
+  handwriting" premise.
+
+Final A.3 dataset: MathWriting `train/` only (229,864 expressions).
+
+### Work — `part-a/experiments/a3-sketchrnn/`
+
+- `data_mathwriting.py`: parses InkML `<trace>` elements into per-
+  stroke (x, y) sequences, concatenates strokes with pen-up bridge
+  points, converts to the same 5-element representation as the
+  QuickDraw loader (`Δx_norm, Δy_norm, p_down, p_up, p_end`). The
+  same `model.py` and `train.py` work unchanged.
+- `viz_data.py`: renders raw InkML samples to a grid for sanity
+  inspection. Confirmed the data is clean, real handwriting — every
+  panel is a different math expression with sub-pixel strokes.
+- `train.py`: added `--dataset {quickdraw,mathwriting}` flag.
+
+### Training results
+
+10,000 steps on MathWriting (`max_len=400, batch=32`, ~70 min on
+Mac MPS at 2.3–2.7 it/s). Loss progression:
+
+| Metric | Step 1 | Step 10,000 | Cat run end |
+|---|---|---|---|
+| Total loss | 3.58 | **−2.85** | −0.02 |
+| GMM (Δ-prediction) | 2.46 | −2.87 | −0.31 |
+| Pen-state CE | 1.11 | 0.021 (≈98% pen-state acc) | 0.29 |
+
+Math handwriting fits much tighter than cat — math expressions have
+more local structure (digit / letter shapes are stable, math symbols
+are stereotyped) than freehand cat doodles. The loss numbers reflect
+this; they aren't directly comparable across datasets but the trend
+is clear.
+
+### Sample inspection — and the lesson
+
+We sampled 16 expressions at T=0.7, T=0.4, T=0.2. They all look like
+**math-flavored gibberish** — strokes that have the cadence and
+density of human math handwriting, but don't form recognizable
+expressions.
+
+This was initially confusing — cat samples looked like cats; why
+don't math samples look like math? The answer:
+
+- **Cat** has a strong prototype shape (head + body + ears + tail).
+  A model trained unconditionally on cats can produce average-cat-
+  shaped outputs because there's a single prototype.
+- **Math** has no prototype. Every training sample is a *different*
+  unique expression. Unconditional generation produces the aggregate
+  appearance of math handwriting — small loops, varying baseline,
+  occasional structural elements — without any specific expression.
+
+This is the expected behavior of a well-trained unconditional model
+on diverse data. The model learned **how** to write math (stroke
+dynamics, pen-up timing, math-style aesthetics), but not **what**
+to write. The "what" comes from conditioning, which A.4 adds via
+canvas + topic + speech inputs.
+
+The numbers confirm the model is healthy: tight per-step prediction,
+98% pen-state accuracy, strokes terminate cleanly, no infinite loops.
+A.3's role — stroke-knowledgeable backbone for A.4 — is fulfilled.
+
+### What we did not do
+
+- Did not condition on the LaTeX labels in MathWriting. Each .inkml
+  file has a `normalizedLabel` field; we ignored it. A label-
+  conditioned mid-stage (between A.3 unconditional and A.4 full
+  multimodal) is a possible future experiment if A.4 needs more
+  stepping stones.
+
+### Where this leaves us
+
+- ✅ A.3 checkpoint: `mathwriting.final.pt` (~3.3M params, 13 MB).
+  Stroke priors learned from 229k human-written math expressions.
+- → A.4 inherits this checkpoint as the transformer backbone.
+- ⚠️ Before A.4, OCT corpus needs to grow from ~37 min to several
+  hours. A.4 itself probably needs a school-lab GPU.
+
+### Tomorrow
+
+- Scale OCT corpus (more videos, more topics).
+- Confirm school-lab GPU access.
+- Plan the A.4 architecture: which weights load from A.3, which
+  layers are added fresh (canvas encoder, cross-attention, word head,
+  page-break head), how the events.jsonl streams turn into training
+  batches.
+
+---
+
 ## 2026-05-10 (later) — Track 2: stroke transformer trains, makes cat-like cats
 
 ### Motivation
