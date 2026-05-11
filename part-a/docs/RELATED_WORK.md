@@ -85,6 +85,45 @@ build the extraction pipeline.
 
 ---
 
+## Speech-Synchronized Whiteboard Generation — arXiv:2603.25870 (March 2026)
+
+**Summary.** The closest prior art to this project. Given a topic prompt,
+a VLM generates a structured drawing representation (whiteboard content
+plan), which is then rendered as synchronized whiteboard video with speech.
+The output is a whiteboard lecture video with coordinated speech.
+
+**Key limitation**: trained and demonstrated on only **24 demos**. No
+large-scale real teaching video used. The strokes are synthetically
+planned by a VLM, not learned from a real teacher's actual hand movements
+and speech patterns.
+
+**Why our approach is different**:
+- We train from **hundreds of hours of real teacher video** — actual
+  hand movements, actual timing, actual teaching cadence learned from data.
+- We generate **learned handwriting style** (OCT's specific stroke shapes
+  and flow), not VLM-planned geometry.
+- We interleave speech and strokes as a joint sequence prediction problem,
+  not a plan-then-render pipeline.
+- Scale: ~20 hours of OCT vs. their 24 demos.
+
+**The genuine research gap**: No prior work trains a generative model on
+real teaching video at scale to jointly generate speech tokens and pen
+strokes as a single learned sequence.
+
+---
+
+## VideoSketcher — arXiv:2602.15819 (February 2026)
+
+**Summary.** Generates sketching videos from text prompts. Focuses on
+the process of drawing (showing the hand sketching) rather than
+educational content. Art/illustration domain.
+
+**Relevance**: Shows the field is moving toward video-as-output for
+generative sketch models. But it doesn't address the math education
+domain, speech-stroke alignment, or learning from real teacher video.
+
+---
+
 ## How they combine for Method A
 
 | Phase of Method A | Inheritance |
@@ -100,3 +139,20 @@ The two papers together cover roughly: "how do we run the loop?"
 work specific to Method A — math/text strokes, multimodal
 conditioning, KA + Organic Chemistry Tutor extraction, speech-stroke
 interleaving — is what fills the gap between them.
+
+---
+
+## Novelty summary (as of May 2026)
+
+The closest prior work (arXiv:2603.25870) uses a VLM to *plan* whiteboard
+content and renders it — 24 demos, no training from real video. VideoSketcher
+(2602.15819) generates art-domain sketching video, not educational content.
+
+**What exists**: VLM-planned whiteboard rendering, art sketch generation,
+speech-to-text, text-to-speech.
+
+**What does not exist**: A model trained end-to-end on real teaching video
+that *jointly* generates speech tokens and pen strokes as a single learned
+sequence, in the style of a specific teacher.
+
+This is the gap our work fills.
