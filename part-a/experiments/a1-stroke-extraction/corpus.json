@@ -4,25 +4,85 @@
       "tag": "oct",
       "url": "https://www.youtube.com/watch?v=pbf4lcJhIfI",
       "duration_cap_sec": 180,
-      "topic": "Pythagorean theorem (basic introduction)"
+      "topic": "Pythagorean theorem (basic introduction)",
+      "channel": "oct"
     },
     {
       "tag": "oct-algebra",
       "url": "https://www.youtube.com/watch?v=MHeirBPOI6w",
       "duration_cap_sec": 600,
-      "topic": "Algebra for beginners (basic introduction)"
+      "topic": "Algebra for beginners (basic introduction)",
+      "channel": "oct"
     },
     {
       "tag": "oct-fractions",
       "url": "https://www.youtube.com/watch?v=5fbzZEK77DQ",
       "duration_cap_sec": 0,
-      "topic": "Adding fractions with unlike denominators"
+      "topic": "Adding fractions with unlike denominators",
+      "channel": "oct"
     },
     {
       "tag": "oct-geometry",
       "url": "https://www.youtube.com/watch?v=oeO8f0taQDA",
       "duration_cap_sec": 0,
-      "topic": "Lines, rays, line segments, angles (geometry introduction)"
+      "topic": "Lines, rays, line segments, angles (geometry introduction)",
+      "channel": "oct"
+    },
+    {
+      "tag": "mrh-equations",
+      "url": "https://www.youtube.com/watch?v=E5fuuYxRn0Y",
+      "duration_cap_sec": 0,
+      "topic": "Algebra equations (Lesson #25)",
+      "channel": "mrh"
+    },
+    {
+      "tag": "mrh-logs",
+      "url": "https://www.youtube.com/watch?v=r9eIi55d0jc",
+      "duration_cap_sec": 0,
+      "topic": "Logarithms introduction (Algebra Lesson #22)",
+      "channel": "mrh"
+    },
+    {
+      "tag": "mrh-quadratic",
+      "url": "https://www.youtube.com/watch?v=V_9OuTt-LUE",
+      "duration_cap_sec": 0,
+      "topic": "Solving and graphing quadratic inequalities (Algebra 2 Lesson #21)",
+      "channel": "mrh"
+    },
+    {
+      "tag": "mrh-complex",
+      "url": "https://www.youtube.com/watch?v=m_czUM9hD_g",
+      "duration_cap_sec": 0,
+      "topic": "Complex numbers (Algebra 2 Lesson #20)",
+      "channel": "mrh"
+    },
+    {
+      "tag": "mrh-completing-square",
+      "url": "https://www.youtube.com/watch?v=H0zRfZwvVOw",
+      "duration_cap_sec": 0,
+      "topic": "Completing the square (Algebra 2 Lesson #19)",
+      "channel": "mrh"
+    },
+    {
+      "tag": "mrh-factoring",
+      "url": "https://www.youtube.com/watch?v=WWU3T1RxpgQ",
+      "duration_cap_sec": 0,
+      "topic": "How to factor (Algebra 2 Lesson #17)",
+      "channel": "mrh"
+    },
+    {
+      "tag": "mrh-systems-elim",
+      "url": "https://www.youtube.com/watch?v=SVEv8akKZQQ",
+      "duration_cap_sec": 0,
+      "topic": "Solving systems by elimination (Algebra 2 Lesson #11)",
+      "channel": "mrh"
+    },
+    {
+      "tag": "mrh-decimals",
+      "url": "https://www.youtube.com/watch?v=dOZfHG_ZLgk",
+      "duration_cap_sec": 0,
+      "topic": "Repeating decimals to fractions",
+      "channel": "mrh"
     }
   ]
 }

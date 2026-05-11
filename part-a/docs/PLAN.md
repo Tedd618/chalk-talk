@@ -83,6 +83,15 @@ built in — everything must come from the data.
 algebra, geometry, fractions, calculus. Broad topic coverage matters
 more than total hours.
 
+**Side experiment (within Method 1):** Also train a two-model variant
+where the point-by-point model is split into a high-level stroke planner
+and a low-level Bézier decoder. The planner outputs 8 numbers (4 Bézier
+control points) per stroke; the decoder is pure math — no training
+needed. Compares against the flat point-by-point model to see whether
+explicit stroke-level planning improves coherence or spatial layout.
+This does not require a new dataset — same OCT data, different output
+head.
+
 ---
 
 ### Method 2 — Qwen speaks, OCT draws
