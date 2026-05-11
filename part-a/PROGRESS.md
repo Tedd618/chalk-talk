@@ -5,6 +5,80 @@ things ended up. Newest entries on top.
 
 ---
 
+## 2026-05-11 (Sunday) — Research direction crystallised
+
+### The core question
+
+Today the research direction became much clearer. The question we are
+really asking is:
+
+> **Can handwriting strokes and spoken words act as context for each
+> other — so that a model can watch a teacher long enough, and then
+> become that teacher?**
+
+This is genuinely novel. Language models learn from text. Image models
+learn from pictures. This model would learn from a third thing: the
+*live act of teaching* — words and hand movements woven together in
+time. Nobody has trained a model on that directly before.
+
+### The trigger sentence insight
+
+If the model is trained on full OCT lectures from start to finish, it
+needs a way to know what topic to teach. The natural answer is a
+**trigger sentence** — something like:
+
+> "Today we are going to learn about the Pythagorean theorem."
+
+The model has seen OCT open hundreds of lessons this way. Given that
+opener, it should be able to generate everything that follows: the
+words he would say, the diagrams he would draw, the equations he would
+write — all in his style, at his pace, in his handwriting.
+
+This is exactly how we train: give it the first sentence, predict the
+rest of the lesson.
+
+### Three methods — the comparison IS the paper
+
+We will build and compare three versions of the system:
+
+**Method 1 — Pure OCT model (the main research bet)**
+Train a single model entirely on OCT lecture data. It learns to speak
+and write simultaneously, just from watching OCT. Given a trigger
+sentence, it generates the whole lecture on its own. No other AI
+involved.
+
+**Method 2 — OCT draws, Qwen speaks**
+Use a powerful existing AI (Qwen) to write the words, and use our
+trained OCT model only for the handwriting part. Qwen knows more math
+but has never held a pen. This tests whether separating thinking from
+writing gives better results.
+
+**Method 3 — Qwen trained to think like OCT**
+Fine-tune Qwen on OCT's teaching style, then use the OCT stroke model
+to render what Qwen says. This tests whether we can get Qwen's math
+depth AND OCT's teaching personality at the same time.
+
+Comparing all three gives us a real answer to: *how much of a good
+lecture comes from knowing the math, and how much comes from knowing
+how to teach?*
+
+### What this means for the data pipeline
+
+The events.jsonl format we have is almost right. It already has
+words and strokes interleaved in time order. The main thing to tune
+is the exact training sequence format — how we present each lesson
+to the model as a learning example.
+
+### Where this leaves us
+
+- ✅ Data pipeline is solid (A.1 v4 + A.2 alignment)
+- ✅ Stroke pretraining done (A.3 MathWriting checkpoint)
+- → Next: scale OCT corpus to ~20 hours covering broad math curriculum
+- → Tune training format for the sequence prediction task
+- → Train Method 1 (pure OCT) first — it is the core research claim
+
+---
+
 ## 2026-05-10/11 (Sat–Sun) — A.1 v4: skeleton extraction rewrite
 
 ### Motivation

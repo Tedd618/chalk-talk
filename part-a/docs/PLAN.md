@@ -1,408 +1,321 @@
 # Part A — Plan
 
-## What Part A is
+## The core research question
 
-A **trained** multimodal autoregressive model that, given the current
-state of the blackboard and what's been said so far, generates the
-next pen movement or the next spoken word — at **stroke-level
-granularity for everything on the board**, including math symbols
-and English text. No primitives, no LaTeX shortcut for formulas. The
-model writes math the way a human teacher does: stroke by stroke.
+> Can handwriting strokes and spoken words act as context for each
+> other — so that a model trained on real teacher videos can generate
+> a full handwritten lecture on its own?
 
-```
-       ┌─────────────────────────────────────────┐
-       ▼                                         │
-  [canvas image]                                 │
-  [prior speech tokens]   ──→  [model]  ──→ next token
-  [prior pen events]                             │
-                                                 │
-              token ∈ {                          │
-                SPEECH(word),                    │
-                PEN(Δx, Δy, p_down|p_up|p_end)   │
-              }                                  │
-                                                 │
-            execute (TTS or render) ─────────────┘
-```
+This is the central bet of Part A. We train a model by showing it
+hundreds of hours of a real teacher (The Organic Chemistry Tutor)
+writing and speaking simultaneously. Then we give it a single
+sentence — "Today we are going to learn the Pythagorean theorem" —
+and ask it to generate the rest of the lesson: the words, the
+diagrams, the equations, written stroke by stroke in that teacher's
+hand.
 
-## Output representation
+Nobody has trained a model this way before. The novelty is treating
+*the live act of teaching* — words and pen movements woven together
+in time — as a learnable sequence.
 
-The final rendered output is always **pen events**
-`(Δx, Δy, p_down|p_up|p_end)` following Sketch-RNN (Ha & Eck 2017;
-see [RELATED_WORK.md](RELATED_WORK.md)) — math and text are written
-stroke by stroke. Whatever the top-level token is, a sub-decoder
-emits pen events to produce actual writing.
+---
 
-What is **not yet decided** is the **token granularity** that the
-top-level autoregressive model operates on. Three approaches will be
-explored as parallel variants — see "Token granularity options"
-below. The choice affects the model's structure, sequence length, and
-data preprocessing requirements, but not the final rendered output
-(always strokes).
+## How it works
 
-### Token granularity options
-
-We will train one A.4 variant per option (see [EXPERIMENTS.md](EXPERIMENTS.md)).
-All three are stroke-generative at render time. They differ in the
-*unit* the top-level model emits per autoregressive step.
-
-#### Option 1 — Stroke-anchored
-**Token = one stroke + words spoken during that stroke.**
-
-Each top-level step emits one full stroke (a pen-down → trajectory →
-pen-up sequence) together with any words the teacher spoke while
-drawing it (zero or more). Strokes themselves are produced by a
-Sketch-RNN-style sub-decoder (MDN over Δ, categorical over pen-state).
-
-- Most natural to the physics of writing.
-- Sequence length per 5-min lesson: ~200–500 strokes.
-- Data extraction unit matches A.1's natural output — no extra
-  semantic labeling.
-- Word-stroke pairing is approximate: one symbol is often several
-  strokes; a long verbal explanation with no writing has no stroke to
-  attach to (we'd add a no-stroke "speech-only" token type to handle
-  that).
-
-#### Option 2 — Word-anchored
-**Token = one spoken word + strokes drawn while saying that word.**
-
-Each top-level step emits one word together with any pen events that
-happened during the word's audio duration.
-
-- Shortest sequences (~600 words / lesson).
-- Speech-led — natural if we think of the tutor as primarily
-  speaking, illustrating as they go.
-- Most pen events have a co-occurring word (KA / OCT empirically have
-  little drawing-without-speech), so "empty stroke list" tokens are the
-  exception, not the rule. See "Analysis" below.
-- **Stroke-segmentation robust**: the model trains on raw timestamped
-  pen events grouped by word. How those events are "segmented into
-  strokes" is cosmetic; the model never sees stroke boundaries as
-  labels. This is a major practical advantage given the difficulty of
-  clean stroke segmentation.
-- **Naturally pairs with a pretrained math LM** (Qwen-Math etc.) —
-  see "Architectural pairing" below.
-
-#### Option 3 — Symbol-anchored
-**Token = one written symbol or shape + words spoken at that moment.**
-
-Each top-level step emits one semantic unit — a letter, a digit, a
-math operator (`²`, `=`, `+`), or a geometric shape (triangle,
-arrow) — together with any words spoken during it. The symbol's
-strokes are produced by a sub-decoder.
-
-- Most semantically meaningful; best fit for math content.
-- Shortest meaningful sequences (~50–200 units / lesson).
-- Requires **handwritten math recognition (HMR)** during data
-  extraction to label which extracted strokes group into which
-  symbol. Significant added work in the data pipeline. Tools to
-  evaluate: Im2Latex, MathPix, MyScript, open-source HMR models.
-- Highest ceiling, highest cost.
-
-### Common across all three
-
-The model is a **single causal transformer over a flat token
-sequence** — no separate sub-decoder, no LSTM. Sketch-RNN's
-contribution we keep is its **output representation** (MDN over
-`(Δx, Δy)`); we drop its RNN backbone in favor of transformer.
-
-- **Single causal transformer**, ~12 layers / ~512 hidden as
-  starting size; tuned later. Modern stack: rotary positional
-  embeddings, FlashAttention, gradient checkpointing.
-- **Cross-attention** to canvas-image embeddings and topic
-  embeddings (both pre-encoded and prepended to the sequence).
-- **Token vocabulary** = BPE word tokens + structural separators
-  (`<stroke_start>`, `<stroke_end>`, `<end>`) + a generic `<pen>`
-  marker. The actual `(Δx, Δy)` and pen-state values are emitted by
-  output heads at `<pen>` positions, not as discrete tokens.
-- **Output heads** dispatched per position by predicted action type:
-  - **Action-type categorical** — `{word, pen, separator, end}`
-  - **Word head** — softmax over BPE vocab (~16k–32k)
-  - **MDN head** — Mixture of M=20 bivariate Gaussians over
-    `(Δx, Δy)` (Sketch-RNN's representation, on a transformer
-    backbone)
-  - **Pen-state head** — categorical over `{down, up, end}`
-- **BPE tokenizer** trained on KA + OCT transcripts. Same tokenizer
-  across variants for fair comparison.
-
-The hierarchy ("stroke-anchored" / "word-anchored" / "symbol-anchored")
-is **implicit, not architectural**. It describes how the data is
-organized and where separator tokens are placed; mechanically the
-model is the same flat transformer in all three cases.
-
-### Pretraining strategy
-
-Training a transformer for joint stroke + speech generation purely
-on KA + OCT data alone would underfit dramatically. Instead we use
-a multi-stage strategy. There is **no single pretrained "stroke
-transformer" base model to fine-tune from** (the closest, Sketch-RNN
-checkpoints, are LSTM-based and not directly transferable), but we
-can warm-start most components:
-
-**Stage 1 — Component warm-starts (off-the-shelf):**
-- Canvas encoder: pretrained ViT (e.g. DINOv2-small), frozen for
-  first runs, LoRA-tuned later.
-- Topic / text encoder: pretrained sentence transformer (frozen).
-- Word embeddings: initialized from a pretrained tokenizer's
-  embedding table (e.g. Llama or Qwen-Math), even though the
-  decoder is freshly initialized.
-
-**Stage 2 — Stroke-only pretraining on public datasets:**
-Pretrain the transformer (without canvas / topic conditioning) on
-publicly available stroke datasets. This gives the model priors for
-"what does a hand-drawn stroke look like" before we add multimodal
-conditioning:
-- **QuickDraw** — 50M sketches, 345 classes (used by Sketch-RNN).
-  Generic shape priors.
-- **CROHME** — handwritten math expressions with stroke traces.
-  Math-symbol priors.
-- **IAM Online** — handwritten English text with stroke traces.
-  English-letter priors.
-
-**Stage 3 — Multimodal fine-tuning on KA + OCT:**
-Add canvas + speech + topic conditioning, fine-tune on extracted
-teacher-video data with the full multimodal objective. Most
-parameters are warm-started by Stages 1–2; only the conditioning
-attention layers and possibly the action-type head start fresh.
-
-This staged approach is the standard recipe for "from scratch in a
-new modality" research (cf. LLaVA's vision-language alignment via
-CLIP + Llama; Whisper's pretraining hierarchy). The word-anchored
-variant gets even more help — its entire backbone can be warm-started
-from Qwen-Math (see the architectural-pairing table above).
-
-### Analysis (from A.1 pilot inspection)
-
-Two observations from inspecting Khan Academy and OCT pilot videos
-sharpen the trade-offs between options:
-
-**1. Speech and drawing co-occurrence.** Tutors speak almost
-continuously, including throughout drawing periods. Drawing-without-
-speech stretches are rare; speaking-without-drawing stretches are
-common (transitions, setup, problem statements). This means:
-- Word-anchored isn't burdened by long "empty word" tokens (drawing
-  silently is rare).
-- Stroke-anchored has to handle plenty of "speech-only" intervals,
-  which need a separate non-stroke token type.
-
-**2. Stroke-segmentation difficulty.** Even with cursor-resistant
-extraction, stroke boundaries are hard to detect cleanly: KA cursive
-flows letters together (under-cuts), OCT slow line-drawing fragments
-single lines (over-cuts), and a single threshold combo doesn't fit
-both. The implications differ by option:
-- **Stroke-anchored**: stroke boundaries are the *labels* we train
-  on. Bad segmentation = bad supervision signal. This is fragile.
-- **Word-anchored**: stroke boundaries are not labels. The model
-  trains on raw pen events grouped by word. Segmentation noise is
-  invisible to the loss.
-- **Symbol-anchored**: even worse than stroke-anchored — symbol
-  boundaries are even harder to recover than stroke boundaries.
-
-### Architectural pairing
-
-Each option has a natural model-family fit:
-
-| Option | Natural foundation |
-|---|---|
-| Stroke-anchored | **From-scratch** Sketch-RNN-derived autoregressive model with Sketch-RNN sub-decoder. Learns language and math reasoning together with stroke dynamics. |
-| Word-anchored | **Pretrained math LLM** (Qwen-Math 7B or similar) with a vision encoder for canvas + a stroke decoder head for `<pen>` tokens. Math reasoning + language come for free; the network only needs to learn joint stroke production. |
-| Symbol-anchored | Either, with HMR labeling pipeline first. |
-
-The word-anchored path is *much* more likely to produce a working
-system in the short term — it inherits Qwen-Math's reasoning. The
-stroke-anchored path is the harder, purer research bet — it forces
-the model to learn teacher dynamics from data, with no language or
-math priors borrowed in.
-
-### Decision
-
-**Order: stroke-anchored first, in two sub-stages, then word-anchored.**
-
-The motivation for going stroke-anchored first is *not* that it's the
-optimal architecture — it's that the project's real signal is OCT
-teacher video. We want a model trained from real teacher data as the
-backbone, not a language model with strokes bolted on. A.4a is the
-"OCT-based model" path; A.4b (Qwen-Math + stroke head) comes later as
-the practical high-quality alternative.
-
-Within A.4a there are two sub-stages, gated by how much OCT data
-we've extracted:
-
-#### A.4a-1 — MathWriting pretrain → OCT 5h fine-tune (immediate)
+A lesson is a long sequence of two kinds of events, interleaved
+in time:
 
 ```
-Stage 1: A.3 stroke model (DONE — mathwriting.final.pt)
-            knows: how to draw math at all
-                          ↓
-Stage 2: + canvas / topic / speech encoders + cross-attention,
-         + word head + page-break head,
-         fine-tune on ~5 hours of OCT events.jsonl
-            adds: joint behavior, conditioning, pedagogy
-            target: a working tutor model on a moderate corpus
+"today"  "we"  "have"  [draws a²]  "a"  "squared"  [draws +]  "plus" ...
 ```
 
-This is the "general → specific" transfer-learning recipe. The
-MathWriting prior provides clean stroke geometry; the OCT fine-tune
-adds joint speech+stroke behavior, canvas conditioning, and tutor-
-style pacing. Standard transfer-learning order.
+We train a model to predict the next event given everything before it.
+At inference, we give it the opening sentence and let it run.
 
-#### A.4a-2 — OCT 50h pretrain → MathWriting refinement (later)
+The model writes the way OCT writes — stroke by stroke, character by
+character, no shortcuts. Every letter and symbol is handwritten, just
+as it appears in the training videos.
+
+---
+
+## The three methods we will build and compare
+
+This comparison IS the research paper.
+
+---
+
+### Method 1 — Pure OCT model
+
+> Train one model entirely on OCT data. It learns to speak and write
+> by watching OCT teach.
 
 ```
-Stage 1: train from scratch on ~50 hours of extracted OCT data
-            knows: joint speech+stroke behavior, tutor pedagogy,
-                   canvas/topic conditioning
-                   + rough math handwriting (extracted-quality)
-                          ↓
-Stage 2: light fine-tune on MathWriting strokes
-            adds: stroke quality refinement
-            (uses rehearsal / low LR to avoid forgetting OCT lessons)
+"Today we will learn the Pythagorean theorem."
+                    │
+                    ▼
+           ┌─────────────────┐
+           │  OCT model      │
+           │  (trained on    │
+           │  OCT lectures)  │
+           └────────┬────────┘
+                    │
+                    ▼
+    words + handwritten strokes, generated together
+    (full lecture, in OCT's voice and handwriting)
 ```
 
-Why we'll flip the order at scale: pretraining sets the model's
-prior, and the prior should ideally match the target task. The target
-task IS OCT-style joint generation. Pretraining on the matched
-distribution removes the domain shift that A.4a-1 has between
-MathWriting (clean stylus, no speech) and OCT (extracted from video,
-joint with speech). A.4a-2 only becomes feasible once OCT is large
-enough to learn handwriting from scratch — about 50 hours by current
-estimates.
+**Training data:** events.jsonl from OCT videos — words and strokes
+interleaved in time order. The model predicts the next word or the
+next stroke given all previous words and strokes.
 
-#### Order summary
+**What it learns from data alone:**
+- OCT's handwriting style and stroke timing
+- Which strokes go with which spoken words
+- How to structure a lesson (problem → explanation → working → answer)
+- When to draw a diagram vs. write an equation
+- Spatial layout — where things go on the board
 
-| When | Variant | Why |
-|---|---|---|
-| Now (corpus ~5 h) | **A.4a-1** | Standard pretrain→fine-tune order; works at this scale |
-| After scaling OCT to ~50 h | **A.4a-2** | Better distribution match; higher quality ceiling |
-| Eventually | **A.4b** | Practical alternative on Qwen-Math, for comparison and as a working-system fallback |
-| Last | **A.4c** | Symbol-anchored, gated on HMR pipeline (A.3.5) |
+**The research question it answers:**
+Can a model become a teacher just by watching one? No math knowledge
+built in — everything must come from the data.
 
-A.4a-1 is the active build target. The MathWriting checkpoint
-(`mathwriting.final.pt`) feeds it as the backbone.
+**Data needed:** ~20 hours of diverse OCT math videos, covering
+algebra, geometry, fractions, calculus. Broad topic coverage matters
+more than total hours.
 
-## Conditioning inputs
+---
 
-| Input | Encoder |
-|---|---|
-| Current canvas snapshot | Small CNN (or ViT-tiny) → fixed-dim embedding |
-| Topic / lesson title | Text encoder (frozen pretrained or trained from scratch) |
-| Prior speech transcript | The autoregressive context itself (the same sequence) |
-| Prior pen actions | Same as above — they are tokens in the sequence |
+### Method 2 — Qwen speaks, OCT draws
 
-Since prior speech and prior strokes are part of the autoregressive
-context, the only "external" conditioning we need is the topic and
-the canvas image. The canvas embedding is prepended (or
-cross-attended to) once per step.
+> Use a powerful AI (Qwen) to generate the words. Use a trained OCT
+> stroke model only to render the handwriting.
 
-## Data sources (training)
+```
+"Explain the Pythagorean theorem"
+                    │
+                    ▼
+           ┌─────────────────┐
+           │  Qwen           │
+           │  (knows math,   │
+           │  generates text)│
+           └────────┬────────┘
+                    │ spoken explanation, word by word
+                    ▼
+           ┌─────────────────┐
+           │  OCT stroke     │
+           │  model          │
+           │  (renders each  │
+           │  word as strokes│
+           │  in OCT's hand) │
+           └────────┬────────┘
+                    │
+                    ▼
+    Qwen's explanation, written in OCT's handwriting
+```
 
-### v1 curation policy: OCT-style only
+**Training data for the OCT stroke model:** same events.jsonl, but
+the model is only trained on the stroke-generation task — given the
+words being spoken and what is already on the board, draw the next
+stroke.
 
-After the A.1 pilot we found that the two source styles have
-dramatically different extraction quality with our current pipeline:
+**What Qwen contributes:** mathematical correctness and the ability
+to handle novel problems OCT never covered.
 
-- **OCT-style** (slow, deliberate writing with frequent pen-lifts —
-  e.g. The Organic Chemistry Tutor): reconstructs cleanly. Strokes
-  alone, replayed on a blank canvas, are recognizable as the original
-  writing.
-- **KA-style** (cursive flow with continuous pen contact across many
-  letters — e.g. Sal Khan): reconstruction is unreadable. Cursive
-  flow defeats centroid-based pen-tip estimation and Bézier
-  segmentation alike.
+**What the OCT stroke model contributes:** handwriting style, spatial
+layout, timing.
 
-**Decision**: For v1 of the model, train only on OCT-style content.
-Defer KA-style until we have a substantially better cursive-aware
-extractor (probably requires explicit cursor tracking — which our
-v2 attempt failed at — or a fundamentally different approach like
-trajectory recovery from inked region skeletons).
+**The research question it answers:**
+Does separating thinking (Qwen) from writing (OCT model) produce
+better lectures than a single model doing both?
 
-This is a curation-driven strategy, not a permanent abandonment of
-KA. If A.4a (stroke-anchored from-scratch) succeeds on OCT-style
-data, we'll know the modeling approach works and can then invest in
-KA-style extraction.
+**Data needed:** same OCT corpus for the stroke model; Qwen used
+as-is with no training.
 
-### v1 corpus (OCT-style)
+---
 
-1. **The Organic Chemistry Tutor** — YouTube, the canonical example.
-   Hundreds of hours of math, chemistry, physics with discrete
-   strokes.
-2. **PatrickJMT, Professor Leonard, Mr. H Tutoring** and similar
-   tablet-tutor channels — to be selected per video for clean
-   stroke recording.
-3. **(Possibly) SketchAgent-style synthetic data** — frontier VLM
-   in the loop generates additional samples on math topics. Useful
-   for filling gaps but secondary to real video extraction.
+### Method 3 — Qwen fine-tuned to teach like OCT
 
-### v2+ corpus (when cursive-aware extraction is ready)
+> Teach Qwen OCT's teaching style, then use the OCT stroke model
+> to render what Qwen says.
 
-1. **Khan Academy** — CC BY-NC-SA, research-friendly. ~1000s of
-   hours. The biggest single math corpus, blocked on extraction
-   quality.
-2. **3Blue1Brown** — animation-heavy, only the handwritten segments
-   are stroke-applicable.
+```
+"Explain the Pythagorean theorem"
+                    │
+                    ▼
+           ┌─────────────────┐
+           │  Qwen           │
+           │  (fine-tuned on │
+           │  OCT transcripts│
+           │  to teach like  │
+           │  OCT)           │
+           └────────┬────────┘
+                    │ explanation in OCT's teaching style
+                    ▼
+           ┌─────────────────┐
+           │  OCT stroke     │
+           │  model          │
+           │  (same as       │
+           │  Method 2)      │
+           └────────┬────────┘
+                    │
+                    ▼
+    OCT-style explanation, written in OCT's handwriting
+    with Qwen's mathematical depth
+```
 
-## Why this is hard
+**Training data for Qwen fine-tune:** OCT speech transcripts — what
+he says, how he structures explanations, his phrasing and pacing.
 
-The architecture doc and SketchAgent's discussion together
-identify these challenges. We inherit them all:
+**The research question it answers:**
+Can we get the best of both — Qwen's mathematical power AND OCT's
+teaching personality? And how does this compare to training from
+scratch on video data?
 
-1. **Stroke extraction from video** — frame-diff + segmentation +
-   vectorization. Hand occlusion (worst on OCT, mild on KA). Variable
-   resolutions, codecs, marker styles.
-2. **Speech-stroke alignment** — Whisper gives word timestamps in ms.
-   Strokes have video-frame timestamps. We need to interleave them
-   accurately enough that "c squared" is followed by the strokes that
-   write `c²`, not the strokes for the next thing.
-3. **Sequence length explosion** — a 5-minute lesson at 30 Hz pen
-   sampling is ~9000 pen events, plus ~600 spoken words. Decoder must
-   handle ~10k-token sequences. Transformer with long context, or
-   hierarchical encoding (one "stroke" = one continuous pen-down arc
-   = one mid-level token expanded into pen events).
-4. **Long-horizon coherence** — the model must remember that it
-   already drew a triangle 5 minutes ago, and not redraw it. Canvas
-   image input helps; long context helps.
-5. **Inference latency** — same as the original doc. Sketch-RNN-style
-   sampling is fast per step but the sequence is long. Speculative
-   execution + streaming render is still relevant.
-6. **Compute budget for training** — far smaller than fine-tuning a
-   VLM, but non-trivial. Aim for a model in the 50M–500M parameter
-   range, trainable on a single high-end GPU (or rented A100/H100
-   for the larger end).
+**Data needed:** OCT transcripts (text only) for fine-tuning Qwen;
+OCT corpus for stroke model.
 
-## Reuse from Part B
+---
 
-| Reused | How |
-|---|---|
-| The browser player's animation engine | Render pen events in real time; same `animatePolyline` logic, fed one event at a time instead of one shape at a time |
-| Canvas dimensions and color | Identical 800×500 canvas |
-| TTS layer | Web Speech API consumes generated word stream |
+## What we are comparing
 
-What is not reused: Part B's JSON script schema, the primitive shapes,
-KaTeX. Method A doesn't produce structured shapes; it produces pen
-events.
+| | Math accuracy | OCT style | Novel topics | Data needed |
+|---|---|---|---|---|
+| Method 1 (pure OCT) | OCT's level | ⭐⭐⭐ high | Only seen topics | 20+ hrs video |
+| Method 2 (Qwen + OCT draw) | Qwen's level | ⭐⭐ medium | Any topic | 20+ hrs video |
+| Method 3 (Qwen fine-tune + OCT draw) | Qwen's level | ⭐⭐⭐ high | Any topic | 20+ hrs video + transcripts |
+
+The goal is to see which approach produces a lecture that a real
+student would want to watch.
+
+---
+
+## Data pipeline
+
+```
+YouTube video (OCT math lecture)
+        │
+        ▼  download.py
+  video file
+        │
+        ▼  frames.py  (extract frames at 30fps)
+  frame images
+        │
+        ▼  extract_v4.py  (skeleton-based stroke extraction)
+  strokes.jsonl  (each stroke: x,y,t points + page number)
+        │
+        │          audio track
+        │               │
+        │               ▼  stt.py  (Whisper speech-to-text)
+        │          words.jsonl  (each word + timestamp)
+        │               │
+        └───────────────┘
+                        │
+                        ▼  merge.py
+                  events.jsonl  (words and strokes interleaved in time)
+                        │
+                        ▼  [to be built] align.py
+                  training.jsonl  (each stroke tagged with surrounding words;
+                                   ready for sequence model training)
+```
+
+One command runs everything:
+```bash
+python pipeline.py "https://youtube.com/watch?v=..." --tag my-video
+```
+
+---
+
+## Training sequence format
+
+Each training example is one full lesson, represented as an ordered
+sequence of events:
+
+```
+[LESSON: "Pythagorean theorem"]
+  → word("today")
+  → word("we")
+  → word("have")
+  → stroke(points=[[120,80],[180,80]], page=0)   ← draws "a²"
+  → word("a")
+  → word("squared")
+  → stroke(points=[[200,80],[200,80]], page=0)   ← draws "+"
+  → word("plus")
+  ...
+  → page_break
+  → word("now")
+  → stroke(...)
+  ...
+  → [END]
+```
+
+The model is trained to predict the next item in the sequence given
+all previous items. At inference, the trigger sentence starts the
+sequence and the model generates the rest.
+
+---
 
 ## Milestones
 
-| #                      | Milestone                                                                                                                                        | Decides                                                                                   |
-| ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------- |
-| **A.0**                | **Frontier-VLM baseline (SketchAgent-style)**                                                                                                    | Quantitative baseline for "no-training" performance — the bar a trained model has to beat |
-| **A.1**                | **Stroke extraction pilot** (1 KA video + 1 OCT video)                                                                                           | Whether stroke recall is high enough to train on the full corpus                          |
-| **A.2**                | **Speech-stroke alignment**                                                                                                                      | Whether Whisper word timestamps can be aligned with extracted strokes accurately          |
-| **A.3**                | **Sketch-RNN baseline** trained on extracted strokes only (no speech, no canvas image)                                                           | Whether the data is learnable at the most basic level — sanity check                      |
-| **A.4a / A.4b / A.4c** | **Multimodal Method A model — three variants in parallel, one per token-granularity option** (stroke-anchored / word-anchored / symbol-anchored) | Whether Method A actually works, and which token granularity is best                      |
-| **A.5**                | **Closed-loop deployment** — model wired into Part B's player, real-time generation                                                              | Whether latency/coherence is good enough for use                                          |
-| **A.6**                | **(Stretch) RL with student-feedback signal**                                                                                                    | Future research                                                                           |
+### Done ✅
+- **A.1** Stroke extraction from OCT video (v4 skeleton pipeline,
+  per-page, colored annotations, 10fps subsampling)
+- **A.2** Speech-stroke alignment (Whisper + merge into events.jsonl)
+- **A.3** Stroke model pretrained on MathWriting (229k expressions,
+  3.3M params — gives the model a feel for how math strokes flow)
+- **pipeline.py** — one command, URL to training data
 
-A.1 and A.2 are the **critical path**. A.3 validates that the data is
-learnable in isolation. A.4 is the actual goal. A.0 is run in parallel
-to A.1–A.2 as a baseline measurement.
+### Next — corpus and data format
+- **A.4-data** Scale OCT corpus to ~20 hours across diverse math topics.
+  Run `pipeline.py` on ~40-60 OCT videos on the lab machine.
+- **A.4-format** Build `align.py` to add word context windows to each
+  stroke, producing the final training sequence format.
 
-Detailed experiment specs in [EXPERIMENTS.md](EXPERIMENTS.md).
+### Core training — Method 1 first
+- **A.4a** Train the pure OCT model. This is the main research claim.
+  Success = give it a trigger sentence, it generates a visible,
+  coherent handwritten lecture.
 
-## Non-goals
+### Comparison methods
+- **A.4b** Train/connect the OCT stroke model for Method 2 (Qwen as
+  script generator, OCT model renders strokes).
+- **A.4c** Fine-tune Qwen on OCT transcripts + connect OCT stroke
+  model (Method 3).
 
-- Pre-baked LaTeX/KaTeX rendering of formulas. The model must produce
-  formula strokes, not formula strings.
-- Real student-facing deployment. Research prototype only.
-- Audio input from a real student. Optional later via text input.
-- Full coverage of all KA / OCT topics. Pilot = math (KA arithmetic +
-  algebra + geometry + intro calc), then expand.
+### Evaluation
+- **A.5** Compare all three methods. What makes a good lecture?
+  Can a student follow it? Does the model write what it says?
+
+### Stretch
+- **A.6** Close the loop — wire the best model into a real browser
+  player. Student types a question, model generates the lecture live.
+
+---
+
+## Why OCT specifically
+
+The Organic Chemistry Tutor writes slowly and deliberately — each
+letter and symbol is a separate stroke, clearly separated. This makes
+extraction clean and reliable. KA-style cursive writing is much harder
+to extract accurately and is deferred.
+
+OCT also has hundreds of hours of math content on YouTube, all in
+a consistent style, which is exactly the kind of large homogeneous
+dataset that lets a model learn a specific person's teaching behaviour.
+
+---
+
+## Why this is hard
+
+1. **Long sequences** — a 10-minute lesson is ~300 strokes and ~800
+   words interleaved. The model needs to hold context over the whole
+   thing.
+2. **Two modalities at once** — predicting the next word and predicting
+   the next stroke are very different tasks. The model must learn to
+   switch between them naturally.
+3. **Spatial coherence** — the model must remember what is already on
+   the board and not redraw it, put new things in sensible places,
+   and keep equations aligned.
+4. **Style consistency** — the handwriting should look like the same
+   person throughout, not drift into random shapes.
+5. **Data scale** — 20 hours sounds like a lot but for a from-scratch
+   model it is modest. Quality and diversity of topics matter enormously.
