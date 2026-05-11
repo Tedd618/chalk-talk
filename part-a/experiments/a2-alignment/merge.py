@@ -43,8 +43,17 @@ def load_jsonl(p: Path) -> list[dict]:
 def merge(tag: str) -> None:
     strokes = load_jsonl(A1_OUT / f"{tag}.strokes.jsonl")
     words = load_jsonl(OUTPUT / f"{tag}.words.jsonl")
+    pages_path = A1_OUT / f"{tag}.pages.jsonl"
+    pages = load_jsonl(pages_path) if pages_path.exists() else []
 
     events: list[dict] = []
+
+    for p in pages:
+        events.append({
+            "type": "page_break",
+            "t": p["t"],
+            "kind": p.get("kind", "clear"),
+        })
 
     for stroke in strokes:
         sid = stroke["stroke_id"]
@@ -73,7 +82,10 @@ def merge(tag: str) -> None:
             "word": w["word"],
         })
 
-    events.sort(key=lambda e: (e["t"], 0 if e["type"] == "word" else 1))
+    # sort by time; tie-break: page_break < word < pen/stroke_end so a
+    # page_break at time t flushes before any other event at t.
+    type_order = {"page_break": 0, "word": 1, "pen": 2, "stroke_end": 2}
+    events.sort(key=lambda e: (e["t"], type_order.get(e["type"], 9)))
 
     OUTPUT.mkdir(parents=True, exist_ok=True)
     out_path = OUTPUT / f"{tag}.events.jsonl"
@@ -84,9 +96,10 @@ def merge(tag: str) -> None:
     n_words = sum(1 for e in events if e["type"] == "word")
     n_pen = sum(1 for e in events if e["type"] == "pen")
     n_strokes = sum(1 for e in events if e["type"] == "stroke_end")
+    n_pages = sum(1 for e in events if e["type"] == "page_break")
     print(f"[{tag}] {len(events)} events: "
-          f"{n_words} word + {n_pen} pen + {n_strokes} stroke_end "
-          f"-> {out_path.name}")
+          f"{n_words} word + {n_pen} pen + {n_strokes} stroke_end + "
+          f"{n_pages} page_break -> {out_path.name}")
 
 
 def main() -> None:

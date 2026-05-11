@@ -22,8 +22,9 @@ part-a/experiments/*/videos/*.info.json
 part-a/experiments/*/frames/
 part-a/experiments/*/output/*.mp4
 part-a/experiments/*/output/*.webm
+part-a/experiments/*/output/*.png
 
-# Keep extracted stroke data and per-video metadata in git (small, useful)
+# Keep extracted stroke data, events, and per-video metadata in git (small, useful)
 !part-a/experiments/*/videos/*.meta.json
 !part-a/experiments/*/output/*.jsonl
 
@@ -38,6 +39,8 @@ part-a/experiments/*/checkpoints/*.ckpt
 
 # Per-experiment downloaded raw data (regenerable from download script)
 part-a/experiments/*/data/*.npz
+part-a/experiments/*/data/*.tgz
+part-a/experiments/*/data/mathwriting-2024/
 
 # Logs
 *.log

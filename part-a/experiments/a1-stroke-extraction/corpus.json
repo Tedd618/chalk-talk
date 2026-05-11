@@ -1,0 +1,28 @@
+{
+  "videos": [
+    {
+      "tag": "oct",
+      "url": "https://www.youtube.com/watch?v=pbf4lcJhIfI",
+      "duration_cap_sec": 180,
+      "topic": "Pythagorean theorem (basic introduction)"
+    },
+    {
+      "tag": "oct-algebra",
+      "url": "https://www.youtube.com/watch?v=MHeirBPOI6w",
+      "duration_cap_sec": 600,
+      "topic": "Algebra for beginners (basic introduction)"
+    },
+    {
+      "tag": "oct-fractions",
+      "url": "https://www.youtube.com/watch?v=5fbzZEK77DQ",
+      "duration_cap_sec": 0,
+      "topic": "Adding fractions with unlike denominators"
+    },
+    {
+      "tag": "oct-geometry",
+      "url": "https://www.youtube.com/watch?v=oeO8f0taQDA",
+      "duration_cap_sec": 0,
+      "topic": "Lines, rays, line segments, angles (geometry introduction)"
+    }
+  ]
+}

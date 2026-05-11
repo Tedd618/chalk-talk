@@ -50,18 +50,27 @@ python3 viz.py oct
 
 ## Status
 
-**v2 pipeline shipped.** Pen-tip = centroid of new persistent ink;
-pen-down = sticky-on-signal; segmentation = greedy cubic-Bézier fit
-within a max-error budget.
+**v4 skeleton pipeline shipped.** Complete rewrite from centroid-tracking
+(v3) to skeleton-based extraction. Instead of tracking where the pen IS
+each frame, v4 records when each pixel BECAME ink, then skeletonizes
+the ink shapes and traces them as stroke polylines.
 
-**OCT extracts cleanly. KA does not.** Reconstruction (strokes only,
-replayed on a blank canvas via `reconstruct.py`) is recognizable on
-the OCT pilot but unreadable on the KA pilot. KA's cursive flow
-defeats per-frame pen-tip recovery from new-ink centroids.
+**Key improvements over v3:**
+- **Per-page processing** — detects page breaks automatically and extracts
+  each page independently. No ghost strokes from previous pages.
+- **Temporal-cluster skeletonization** — strokes that cross (e.g. "1"
+  over a fraction bar) are skeletonized separately by when they were
+  drawn, preventing fragmentation.
+- **Max-channel color capture** — uses max(R,G,B) instead of grayscale,
+  so colored annotations (arrows, boxes, highlights) are preserved.
+- **10fps subsampling** — reads every 3rd frame for 2.5× speedup with
+  no quality loss.
+- **~1.5 min for 10 min of video** (was ~4 min before subsampling).
 
-Per-source policy locked in: **OCT-style for v1**, KA deferred until
-extraction is better. See [../docs/PLAN.md](../docs/PLAN.md) data
-sources section.
+**End-to-end pipeline (`pipeline.py`)** — single command from YouTube
+URL to training-ready events.jsonl.
+
+Per-source policy: **OCT-style for v1**, KA deferred.
 
 ## Decision log
 
@@ -108,25 +117,50 @@ sources section.
   Chaikin's algorithm (two iterations) per stroke. Visually approximates
   a quadratic B-spline; output looks like flowing handwriting rather
   than jagged polylines. Cosmetic only — does not change the data.
+- **v4 skeleton rewrite** — completely new approach. Instead of
+  tracking the pen-tip centroid frame-by-frame (v3), v4 builds a
+  temporal pixel map (when did each pixel first become persistent ink),
+  skeletonizes the ink shapes to get 1px-wide centerlines, and traces
+  those as stroke polylines. Much denser, more shape-accurate strokes.
+- **Max-channel brightness** — `max(R, G, B)` instead of grayscale
+  conversion. Colored annotations (blue arrows, red boxes) that were
+  invisible in grayscale are now captured as solid strokes.
+- **Temporal-cluster skeletonization** — the key insight. Skeletonizing
+  ALL ink at once creates junction artifacts wherever strokes cross
+  (e.g. a "1" crossing a fraction bar splits the bar into fragments).
+  Fix: within each connected component of ink, group pixels by when
+  they were drawn, and skeletonize each temporal cluster independently.
+  Strokes drawn at different times never share junctions.
+- **Per-page temporal maps** — in a 10-min video, the tutor clears the
+  board multiple times. Without page awareness, old ink from page 1
+  pollutes page 5's extraction (ghost strokes). Fix: detect page breaks
+  during the temporal-map build (sharp drop in persistent pixel count)
+  and snapshot + reset. Each page gets a completely fresh extraction.
+- **10fps subsampling** — Phase 1 (building the temporal map) is 95%
+  imread time. Reading every 3rd frame (10fps instead of 30fps) gives
+  2.5× speedup with no quality difference. Temporal precision goes
+  from ±33ms to ±100ms per stroke — plenty for training data.
 
 ## Current baseline
 
 ```
-extract.py settings (current preferred):
+extract_v4.py settings:
   INK_THRESHOLD = 28
-  LOOKAHEAD = 90 (3 sec)
-  BASELINE_FRAMES = 60
-  MIN_NEW_INK_PIXELS = 1
-  STICKY_FRAMES = 4
-  INKED_PATH_RATIO = 0.4
-  CUSP_ANGLE_DEG = 110
-  CUSP_MIN_SEPARATION = 6
-  MIN_STROKE_PTS = 3
+  LOOKAHEAD = 30 (3 sec at 10fps)
+  BASELINE_FRAMES = 20
+  FRAME_STEP = 3 (30fps → 10fps subsampling)
+  TEMPORAL_CLUSTER_GAP = 8
+  TEMPORAL_GAP_FRAMES = 10
+  RDP_EPSILON = 0.8
+  MIN_STROKE_POINTS = 2
+  MIN_STROKE_DISTANCE = 5.0
+  PAGE_BREAK_DROP = 0.4
 ```
 
-3-min OCT pilot:
-- 1172 frames with raw ink signal
-- 111 pen-down runs (after path-verification splits)
-- 137 final strokes (after cusp segmentation)
+Verified on:
+- `oct` (Pythagorean, 3 min): 2 pages, 153 strokes, 28s
+- `oct-fractions` (Adding Fractions, 10 min): 8 pages, 767 strokes, 94s
 
-Reconstruction is recognizably the original writing.
+Reconstruction matches original at all tested timestamps.
+Colored annotations (red boxes, blue arrows, green lines) captured.
+No ghost strokes across page breaks.

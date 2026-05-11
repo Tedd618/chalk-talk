@@ -81,6 +81,28 @@ def reconstruct(tag: str, fps: int = 30, color_mode: str = "single",
     if not strokes:
         sys.exit(f"no strokes in {strokes_path}")
 
+    # Optional page-break events. We render strokes belonging only to
+    # the current page (between the previous and next page_break).
+    pages_path = OUTPUT / f"{tag}.pages.jsonl"
+    page_break_times: list[float] = []
+    if pages_path.exists():
+        for line in pages_path.read_text().splitlines():
+            if line.strip():
+                page_break_times.append(float(json.loads(line)["t"]))
+        page_break_times.sort()
+    if page_break_times:
+        print(f"[{tag}] honoring {len(page_break_times)} page break(s)")
+
+    def current_page_start(t: float) -> float:
+        """Time of the most recent page_break at or before t. 0 if none."""
+        last = 0.0
+        for pb in page_break_times:
+            if pb <= t:
+                last = pb
+            else:
+                break
+        return last
+
     max_t = max(s["t_end"] for s in strokes)
     n_frames = int((max_t + tail_seconds) * fps)
 
@@ -99,9 +121,13 @@ def reconstruct(tag: str, fps: int = 30, color_mode: str = "single",
     for i in range(n_frames):
         t = i / fps
         canvas = np.zeros((h, w, 3), dtype=np.uint8)
+        page_start = current_page_start(t)
 
         for sid, pts in stroke_arrays:
             if not pts or pts[0][0] > t:
+                continue
+            # only render strokes that started after the most recent page break
+            if pts[0][0] < page_start:
                 continue
             shown_xy = [(x, y) for tt, x, y in pts if tt <= t]
             if len(shown_xy) < 2:

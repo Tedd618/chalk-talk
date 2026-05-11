@@ -47,7 +47,7 @@ def transcribe(tag: str, model_size: str = "small",
         word_timestamps=True,
         vad_filter=True,
         vad_parameters={"min_silence_duration_ms": 300},
-        clip_timestamps=[0, duration] if duration else None,
+        clip_timestamps=[0.0, float(duration)] if duration else [0.0],
     )
     print(f"[{tag}] detected language: {info.language} "
           f"(prob {info.language_probability:.2f}); duration {info.duration:.1f}s")

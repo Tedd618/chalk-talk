@@ -1,5 +1,15 @@
-"""Download pilot videos with yt-dlp; capture metadata for topic conditioning."""
+"""Download corpus videos with yt-dlp; capture metadata.
+
+Reads the video list from corpus.json. Skips downloads that already
+exist. Writes a sidecar <tag>.meta.json per video with title, duration,
+uploader, etc.
+
+Usage:
+    python3 download.py            # download all corpus entries
+    python3 download.py oct-algebra  # download only this tag
+"""
 from __future__ import annotations
+import argparse
 import json
 import shutil
 import subprocess
@@ -8,11 +18,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
 VIDEOS = ROOT / "videos"
-
-PILOTS = {
-    "ka-pythagoras": "https://www.youtube.com/watch?v=AA6RfgP-AHU",
-    "oct":           "https://www.youtube.com/watch?v=pbf4lcJhIfI",
-}
+CORPUS = ROOT / "corpus.json"
 
 
 def require(cmd: str) -> str:
@@ -22,7 +28,15 @@ def require(cmd: str) -> str:
     return p
 
 
-def download_one(tag: str, url: str) -> None:
+def load_corpus() -> list[dict]:
+    if not CORPUS.exists():
+        sys.exit(f"missing corpus file: {CORPUS}")
+    return json.loads(CORPUS.read_text())["videos"]
+
+
+def download_one(entry: dict) -> None:
+    tag = entry["tag"]
+    url = entry["url"]
     VIDEOS.mkdir(parents=True, exist_ok=True)
     out_video = VIDEOS / f"{tag}.mp4"
     out_meta = VIDEOS / f"{tag}.meta.json"
@@ -51,6 +65,8 @@ def download_one(tag: str, url: str) -> None:
         meta = {
             "tag": tag,
             "url": url,
+            "topic": entry.get("topic", ""),
+            "duration_cap_sec": entry.get("duration_cap_sec", 0),
             "title": info.get("title"),
             "description": info.get("description"),
             "duration_sec": info.get("duration"),
@@ -67,8 +83,17 @@ def download_one(tag: str, url: str) -> None:
 
 def main() -> None:
     require("yt-dlp")
-    for tag, url in PILOTS.items():
-        download_one(tag, url)
+    ap = argparse.ArgumentParser()
+    ap.add_argument("tag", nargs="?", default=None,
+                    help="Single tag to download (default: all)")
+    args = ap.parse_args()
+    corpus = load_corpus()
+    if args.tag:
+        corpus = [e for e in corpus if e["tag"] == args.tag]
+        if not corpus:
+            sys.exit(f"no entry with tag={args.tag} in {CORPUS}")
+    for entry in corpus:
+        download_one(entry)
 
 
 if __name__ == "__main__":

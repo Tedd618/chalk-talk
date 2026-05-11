@@ -5,6 +5,66 @@ things ended up. Newest entries on top.
 
 ---
 
+## 2026-05-10/11 (Sat–Sun) — A.1 v4: skeleton extraction rewrite
+
+### Motivation
+
+The v3 centroid-tracking extraction worked but had a hard quality
+ceiling: it tracked WHERE the pen was each frame, producing sparse
+3-5 point approximations. It couldn't handle colored annotations,
+struggled with fraction bars, and had no concept of page breaks —
+so a 10-min video produced one overlapping mess of ghost strokes.
+
+### What changed
+
+Complete rewrite to a **skeleton-based** approach (`extract_v4.py`).
+Instead of tracking the moving pen-tip, v4 answers a different question:
+"what shape did the ink form, and when was each part drawn?"
+
+Three key breakthroughs:
+
+1. **Per-page extraction** — the video is split at page breaks
+   (detected automatically from sharp drops in ink count), and each
+   page is extracted independently as if it were a fresh short video.
+   This eliminated ghost strokes from old pages entirely.
+
+2. **Temporal-cluster skeletonization** — when two strokes cross
+   (e.g. a "1" written over a fraction bar), skeletonizing them
+   together creates junction artifacts that fragment the bar into
+   dashes. Fix: group ink pixels by when they were drawn, and
+   skeletonize each temporal group independently. Strokes that were
+   drawn at different times never interfere with each other.
+
+3. **Max-channel color capture** — using max(R,G,B) instead of
+   grayscale means colored annotations (blue arrows, red boxes,
+   green highlights) that were previously invisible are now captured.
+
+### Speed
+
+Profiling showed that 95% of extraction time was reading PNG files
+from disk. Subsampling to 10fps (every 3rd frame) gave a 2.5× speedup
+with identical quality — temporal precision went from ±33ms to ±100ms
+per stroke, which is plenty for training data.
+
+- 3-min video: 28 seconds
+- 10-min video: 94 seconds
+
+### Verification
+
+Eyeball-tested at multiple timestamps across two different videos
+(Pythagorean theorem and Adding Fractions). All scenes clean:
+fraction bars solid, colored annotations captured, page breaks
+respected, digits properly sized. Created `pipeline.py` for
+single-command end-to-end processing (YouTube URL → events.jsonl).
+
+### Where this leaves us
+
+- ✅ Extraction quality is now good enough for training data
+- ✅ Speed is practical for scaling (~1.5 min per 10 min of video)
+- → Next: scale OCT corpus to ~5 hours on the school Linux machine
+
+---
+
 ## 2026-05-09 (Saturday) — A.3: training the stroke model
 
 ### Motivation

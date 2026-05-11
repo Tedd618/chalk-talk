@@ -203,6 +203,38 @@ This is the project goal. The variants from
 A.4a-1 is the active build target. A.4a-2 becomes feasible only after
 OCT corpus growth.
 
+### Stroke-as-token parallel track
+
+Each A.4 task above uses **pen event as token** (one Δx, Δy step =
+one autoregressive step), inherited from A.3. In parallel, a
+**stroke-as-token** variant will be run alongside each task. In this
+variant the model emits one complete stroke per step — represented as
+a fixed-length parametric encoding (e.g. Bézier control points or a
+learned VQ-VAE codebook entry) — rather than individual pen movements.
+
+**Motivation**: The pen-event approach is analogous to character-level
+language modeling. Stroke-as-token is the equivalent of word-level —
+shorter sequences, easier to align conditioning signals (canvas,
+speech) to meaningful boundaries, potentially better long-range
+coherence. The tradeoff is that stroke shape fidelity depends on the
+quality of the stroke encoder, and fine motor dynamics may be lost.
+
+**Plan**: For each A.4 task, train both the pen-event version and the
+stroke-as-token version under identical conditioning. Compare:
+- Output coherence (same rubric as A.0 baseline)
+- Sequence length (expected 10–30× shorter for stroke-as-token)
+- Stroke shape fidelity (does the parametric encoding reconstruct the
+  original stroke accurately?)
+- Inference latency per generated second of writing
+
+This parallel comparison is intentional research contribution: it
+directly answers the question of which token granularity is better
+suited to multimodal math handwriting generation.
+
+**Deliverable suffix**: stroke-as-token variants are stored in
+`-stroke` suffixed directories alongside the pen-event versions, e.g.
+`experiments/a4a-1-stroke-anchored-mw-pretrain-stroke/`.
+
 ### Common architecture
 
 Shared across all three variants (target ~50–500M params total).
