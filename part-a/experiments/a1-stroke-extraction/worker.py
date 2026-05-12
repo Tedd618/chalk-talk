@@ -187,12 +187,25 @@ def process_job(job_path: Path, job: dict) -> None:
         ok, err = run_step(label, cmd, ROOT)
         dt = time.time() - t0
         if ok:
-            # copy v4 canonical after extract step
             if label == "extract":
+                # copy v4 output to canonical name
                 v4 = ROOT / "output" / f"{tag}.v4.strokes.jsonl"
                 canon = ROOT / "output" / f"{tag}.strokes.jsonl"
                 if v4.exists():
                     shutil.copy2(v4, canon)
+            if label == "frames":
+                # video no longer needed — frames are on disk
+                for ext in (".mp4", ".webm", ".mkv"):
+                    vf = ROOT / "videos" / f"{tag}{ext}"
+                    if vf.exists():
+                        vf.unlink()
+                        print(f"(deleted video) ", end="")
+            if label == "extract":
+                # frames no longer needed — strokes are extracted
+                frames_dir = ROOT / "frames" / tag
+                if frames_dir.exists():
+                    shutil.rmtree(frames_dir)
+                    print(f"(deleted frames) ", end="")
             print(f"ok ({dt:.1f}s)")
         else:
             print(f"FAIL ({dt:.1f}s)")
