@@ -1,0 +1,11 @@
+# large binary outputs — never commit these
+videos/
+frames/
+output/*.mp4
+output/*.png
+
+# queue runtime state — shared filesystem handles this, not git
+queue/pending/
+queue/running/
+queue/done/
+queue/failed/
