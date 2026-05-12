@@ -179,7 +179,6 @@ def process_job(job_path: Path, job: dict) -> None:
         ("pages",    [PY, "pages.py",    tag]),
         ("stt",      [PY, str(A2_DIR / "stt.py"), tag] + (["--duration", str(cap)] if cap else [])),
         ("merge",    [PY, str(A2_DIR / "merge.py"), tag]),
-        ("recon",    [PY, "reconstruct.py", tag]),
     ]
 
     for label, cmd in steps:
