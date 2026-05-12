@@ -188,7 +188,7 @@ def process_job(job_path: Path, job: dict) -> None:
     print(f"\n=== [{hostname()}] {tag}: {job.get('topic', '')}")
 
     steps = [
-        ("download", [PY, "download.py", tag]),
+        ("download", [PY, "download.py", tag, "--url", job["url"]]),
         ("frames",   [PY, "frames.py",   tag, "--duration", str(cap)]),
         ("extract",  [PY, "extract_v4.py", tag]),
         ("pages",    [PY, "pages.py",    tag]),

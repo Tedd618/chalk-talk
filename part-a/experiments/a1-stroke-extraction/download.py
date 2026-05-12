@@ -89,7 +89,15 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("tag", nargs="?", default=None,
                     help="Single tag to download (default: all)")
+    ap.add_argument("--url", default=None,
+                    help="URL to download directly (skips corpus.json lookup)")
     args = ap.parse_args()
+
+    if args.url:
+        # called by worker.py with explicit URL
+        download_one({"tag": args.tag, "url": args.url})
+        return
+
     corpus = load_corpus()
     if args.tag:
         corpus = [e for e in corpus if e["tag"] == args.tag]
