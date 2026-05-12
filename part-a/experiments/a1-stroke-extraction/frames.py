@@ -6,14 +6,17 @@ Usage:
 """
 from __future__ import annotations
 import argparse
+import os
 import shutil
 import subprocess
 import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
-VIDEOS = ROOT / "videos"
-FRAMES = ROOT / "frames"
+# CHALK_SCRATCH lets worker.py redirect large files to /tmp or similar
+_scratch = os.environ.get("CHALK_SCRATCH")
+VIDEOS = Path(_scratch) if _scratch else ROOT / "videos"
+FRAMES = Path(_scratch) / "frames" if _scratch else ROOT / "frames"
 
 DEFAULT_FPS = 30
 DEFAULT_HEIGHT = 720  # downscale tall axis to 720 px max

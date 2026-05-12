@@ -29,6 +29,7 @@ ink centerline — not the 3-5 point centroid approximations of v3.
 from __future__ import annotations
 import argparse
 import json
+import os
 import sys
 from collections import defaultdict, deque
 from pathlib import Path
@@ -38,7 +39,8 @@ import numpy as np
 from skimage.morphology import skeletonize
 
 ROOT = Path(__file__).resolve().parent
-FRAMES = ROOT / "frames"
+_scratch = os.environ.get("CHALK_SCRATCH")
+FRAMES = Path(_scratch) / "frames" if _scratch else ROOT / "frames"
 OUTPUT = ROOT / "output"
 
 # ── Inherited from v3 (persistence detection) ─────────────────────────────────

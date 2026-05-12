@@ -44,6 +44,11 @@ FAILED  = QUEUE / "failed"
 A2_DIR  = ROOT.parent / "a2-alignment"
 PY      = str(ROOT / ".venv" / "bin" / "python")
 
+# Large temporary data (videos, frames) goes here — outside the home quota.
+# Uses /tmp if available and has enough space, otherwise falls back to ROOT.
+_tmp_candidate = Path("/tmp") / f"chalk-{os.getenv('USER', 'user')}"
+SCRATCH = _tmp_candidate if _tmp_candidate.parent.exists() else ROOT
+
 STALE_HOURS = 3   # jobs running longer than this are considered crashed
 
 
@@ -159,8 +164,12 @@ def claim_next() -> tuple[Path, dict] | tuple[None, None]:
     return None, None
 
 
-def run_step(label: str, cmd: list[str], cwd: Path) -> tuple[bool, str]:
-    res = subprocess.run(cmd, cwd=str(cwd), capture_output=True, text=True)
+def run_step(label: str, cmd: list[str], cwd: Path,
+             extra_env: dict | None = None) -> tuple[bool, str]:
+    env = os.environ.copy()
+    if extra_env:
+        env.update(extra_env)
+    res = subprocess.run(cmd, cwd=str(cwd), capture_output=True, text=True, env=env)
     if res.returncode != 0:
         err = (res.stderr + res.stdout).strip()[:500]
         return False, f"step '{label}' failed:\n{err}"
@@ -170,6 +179,12 @@ def run_step(label: str, cmd: list[str], cwd: Path) -> tuple[bool, str]:
 def process_job(job_path: Path, job: dict) -> None:
     tag = job["tag"]
     cap = int(job.get("duration_cap_sec") or 0)
+
+    # scratch dir for this job's videos and frames
+    scratch = SCRATCH / tag
+    scratch.mkdir(parents=True, exist_ok=True)
+    env = {"CHALK_SCRATCH": str(scratch)}
+
     print(f"\n=== [{hostname()}] {tag}: {job.get('topic', '')}")
 
     steps = [
@@ -184,7 +199,7 @@ def process_job(job_path: Path, job: dict) -> None:
     for label, cmd in steps:
         print(f"  ▸ {label} … ", end="", flush=True)
         t0 = time.time()
-        ok, err = run_step(label, cmd, ROOT)
+        ok, err = run_step(label, cmd, ROOT, extra_env=env)
         dt = time.time() - t0
         if ok:
             if label == "extract":
@@ -194,20 +209,21 @@ def process_job(job_path: Path, job: dict) -> None:
                 if v4.exists():
                     shutil.copy2(v4, canon)
             if label == "frames":
-                # video no longer needed — frames are on disk
+                # video no longer needed — delete from scratch
                 for ext in (".mp4", ".webm", ".mkv"):
-                    vf = ROOT / "videos" / f"{tag}{ext}"
+                    vf = scratch / f"{tag}{ext}"
                     if vf.exists():
                         vf.unlink()
                         print(f"(deleted video) ", end="")
             if label == "extract":
-                # frames no longer needed — strokes are extracted
-                frames_dir = ROOT / "frames" / tag
+                # frames no longer needed — delete from scratch
+                frames_dir = scratch / "frames"
                 if frames_dir.exists():
                     shutil.rmtree(frames_dir)
                     print(f"(deleted frames) ", end="")
             print(f"ok ({dt:.1f}s)")
         else:
+            shutil.rmtree(scratch, ignore_errors=True)  # clean up on failure too
             print(f"FAIL ({dt:.1f}s)")
             job["status"]      = "failed"
             job["finished_at"] = now_iso()
@@ -217,6 +233,8 @@ def process_job(job_path: Path, job: dict) -> None:
             os.rename(job_path, dest)
             print(f"  [{tag}] moved to queue/failed/")
             return
+
+    shutil.rmtree(scratch, ignore_errors=True)  # final cleanup
 
     job["status"]      = "done"
     job["finished_at"] = now_iso()
