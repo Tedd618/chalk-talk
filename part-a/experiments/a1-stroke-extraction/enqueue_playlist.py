@@ -80,6 +80,7 @@ def main() -> None:
 
     already = all_queued_ids()
     added = skipped = 0
+    new_jobs = []
 
     for v in videos:
         tag = f"{args.prefix}-{v['id']}"
@@ -121,10 +122,27 @@ def main() -> None:
         else:
             dest = PENDING / f"{tag}.json"
             dest.write_text(json.dumps(job, indent=2, ensure_ascii=False))
+            new_jobs.append(job)
             print(f"  added: {tag}  ({v['duration']//60}m)  {v['title'][:50]}")
         added += 1
 
     print(f"\nadded={added}  skipped={skipped}")
+
+    if not args.dry_run and added > 0:
+        # update the committed manifest so other machines can seed from git
+        manifest_path = Path(__file__).resolve().parent / "queue_manifest.json"
+        existing = []
+        if manifest_path.exists():
+            existing = json.loads(manifest_path.read_text()).get("videos", [])
+        existing_tags = {e["tag"] for e in existing}
+        new_entries = [
+            {"tag": j["tag"], "url": j["url"], "topic": j["topic"],
+             "channel": j["channel"], "duration_cap_sec": j["duration_cap_sec"]}
+            for j in new_jobs if j["tag"] not in existing_tags
+        ]
+        all_entries = sorted(existing + new_entries, key=lambda x: x["tag"])
+        manifest_path.write_text(json.dumps({"videos": all_entries}, indent=2, ensure_ascii=False))
+        print(f"updated queue_manifest.json ({len(all_entries)} total entries)")
 
 
 if __name__ == "__main__":

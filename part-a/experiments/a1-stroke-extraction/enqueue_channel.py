@@ -169,6 +169,21 @@ def main() -> None:
 
     print(f"wrote {total} job files to queue/pending/")
 
+    # update the committed manifest so other machines can seed from git
+    manifest_path = ROOT / "queue_manifest.json"
+    existing = []
+    if manifest_path.exists():
+        existing = json.loads(manifest_path.read_text()).get("videos", [])
+    existing_tags = {e["tag"] for e in existing}
+    new_entries = [
+        {"tag": j["tag"], "url": j["url"], "topic": j["topic"],
+         "channel": j["channel"], "duration_cap_sec": j["duration_cap_sec"]}
+        for j in seen_ids.values() if j["tag"] not in existing_tags
+    ]
+    all_entries = sorted(existing + new_entries, key=lambda x: x["tag"])
+    manifest_path.write_text(json.dumps({"videos": all_entries}, indent=2, ensure_ascii=False))
+    print(f"updated queue_manifest.json ({len(all_entries)} total entries)")
+
 
 if __name__ == "__main__":
     main()
