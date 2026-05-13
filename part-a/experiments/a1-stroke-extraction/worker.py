@@ -224,6 +224,9 @@ def process_job(job_path: Path, job: dict) -> None:
         else:
             shutil.rmtree(scratch, ignore_errors=True)  # clean up on failure too
             print(f"FAIL ({dt:.1f}s)")
+            # show error so we can debug from the terminal
+            for line in err.splitlines()[:5]:
+                print(f"    {line}")
             job["status"]      = "failed"
             job["finished_at"] = now_iso()
             job["error"]       = err
@@ -255,6 +258,24 @@ def cmd_run(_args) -> None:
         processed += 1
 
 
+# ── purge ─────────────────────────────────────────────────────────────────────
+
+PURGE_KEYWORDS = ["membership", "members only", "using excel", "patreon"]
+
+def cmd_purge(_args) -> None:
+    """Remove unwanted videos (membership, Excel, etc.) from pending and failed."""
+    purged = 0
+    for folder in (PENDING, FAILED):
+        for p in sorted(folder.glob("*.json")):
+            job = load_job(p)
+            title = job.get("topic", "").lower()
+            if any(kw in title for kw in PURGE_KEYWORDS):
+                p.unlink()
+                print(f"  purged: {job['tag']}  ({job.get('topic','')})")
+                purged += 1
+    print(f"\npurged {purged} jobs")
+
+
 # ── CLI ───────────────────────────────────────────────────────────────────────
 
 def main() -> None:
@@ -283,8 +304,12 @@ def main() -> None:
     p_rescue.add_argument("--hours", type=float, default=STALE_HOURS,
                           help=f"Hours before a running job is considered stale (default {STALE_HOURS})")
 
+    # purge
+    sub.add_parser("purge", help="Remove membership/Excel/patreon videos from queue")
+
     args = ap.parse_args()
-    {"add": cmd_add, "status": cmd_status, "run": cmd_run, "rescue": cmd_rescue}[args.cmd](args)
+    {"add": cmd_add, "status": cmd_status, "run": cmd_run,
+     "rescue": cmd_rescue, "purge": cmd_purge}[args.cmd](args)
 
 
 if __name__ == "__main__":

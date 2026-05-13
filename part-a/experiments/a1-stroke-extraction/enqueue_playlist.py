@@ -20,7 +20,10 @@ ROOT    = Path(__file__).resolve().parent
 QUEUE   = ROOT / "queue"
 PENDING = QUEUE / "pending"
 
-SKIP_KEYWORDS = ["patreon", "studying tips", "study tips", "my channel"]
+SKIP_KEYWORDS = [
+    "patreon", "studying tips", "study tips", "my channel",
+    "membership", "members only", "using excel",
+]
 
 def slug(title: str) -> str:
     t = title.lower()

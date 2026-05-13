@@ -41,7 +41,10 @@ EXCLUDE_KEYWORDS = [
     "circuit", "electric", "science", "patreon",
 ]
 
-SKIP_TITLE_KEYWORDS = ["patreon", "study tip", "studying tip", "my channel"]
+SKIP_TITLE_KEYWORDS = [
+    "patreon", "study tip", "studying tip", "my channel",
+    "membership", "members only", "using excel",
+]
 
 
 def run_yt(args: list[str]) -> str:

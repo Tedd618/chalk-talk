@@ -26,11 +26,17 @@ VIDEOS = Path(_scratch) if _scratch else A1_DIR / "videos"
 OUTPUT = A2_DIR / "output"
 
 
+def find_video(tag: str) -> Path:
+    for ext in (".mp4", ".webm", ".mkv"):
+        p = VIDEOS / f"{tag}{ext}"
+        if p.exists():
+            return p
+    sys.exit(f"video not found in {VIDEOS} for tag={tag}. run a1 download.py first.")
+
+
 def transcribe(tag: str, model_size: str = "small",
                duration: float | None = None) -> None:
-    src = VIDEOS / f"{tag}.mp4"
-    if not src.exists():
-        sys.exit(f"video not found: {src}. run a1 download.py first.")
+    src = find_video(tag)
 
     # imported here so a quick --help on this script doesn't pay the cost
     from faster_whisper import WhisperModel

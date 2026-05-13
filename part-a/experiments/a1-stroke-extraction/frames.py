@@ -29,11 +29,18 @@ def require(cmd: str) -> str:
     return p
 
 
+def find_video(tag: str) -> Path:
+    """Find video file regardless of extension."""
+    for ext in (".mp4", ".webm", ".mkv"):
+        p = VIDEOS / f"{tag}{ext}"
+        if p.exists():
+            return p
+    sys.exit(f"video not found in {VIDEOS} for tag={tag}. run download.py first.")
+
+
 def extract(tag: str, start: float, duration: float | None,
             fps: int, height: int) -> None:
-    src = VIDEOS / f"{tag}.mp4"
-    if not src.exists():
-        sys.exit(f"video not found: {src}. run download.py first.")
+    src = find_video(tag)
 
     out_dir = FRAMES / tag
     if out_dir.exists():
