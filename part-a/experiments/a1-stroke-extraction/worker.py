@@ -191,7 +191,6 @@ def process_job(job_path: Path, job: dict) -> None:
         ("download", [PY, "download.py", tag, "--url", job["url"]]),
         ("frames",   [PY, "frames.py",   tag, "--duration", str(cap)]),
         ("extract",  [PY, "extract_v4.py", tag]),
-        ("pages",    [PY, "pages.py",    tag]),
         ("stt",      [PY, str(A2_DIR / "stt.py"), tag] + (["--duration", str(cap)] if cap else [])),
         ("merge",    [PY, str(A2_DIR / "merge.py"), tag]),
     ]
