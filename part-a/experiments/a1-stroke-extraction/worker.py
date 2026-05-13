@@ -207,8 +207,8 @@ def process_job(job_path: Path, job: dict) -> None:
                 canon = ROOT / "output" / f"{tag}.strokes.jsonl"
                 if v4.exists():
                     shutil.copy2(v4, canon)
-            if label == "frames":
-                # video no longer needed — delete from scratch
+            if label == "stt":
+                # video no longer needed (stt was last step to use it)
                 for ext in (".mp4", ".webm", ".mkv"):
                     vf = scratch / f"{tag}{ext}"
                     if vf.exists():

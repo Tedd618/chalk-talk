@@ -15,12 +15,14 @@ Usage:
 from __future__ import annotations
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 
 A2_DIR = Path(__file__).resolve().parent
 A1_DIR = A2_DIR.parent / "a1-stroke-extraction"
-VIDEOS = A1_DIR / "videos"
+_scratch = os.environ.get("CHALK_SCRATCH")
+VIDEOS = Path(_scratch) if _scratch else A1_DIR / "videos"
 OUTPUT = A2_DIR / "output"
 
 
