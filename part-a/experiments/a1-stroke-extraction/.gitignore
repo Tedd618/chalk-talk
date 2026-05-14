@@ -20,3 +20,6 @@ queue/pending/
 queue/running/
 queue/done/
 queue/failed/
+
+# ── credentials — never commit ───────────────────────────────────────────────
+yt-cookies.txt

@@ -49,18 +49,19 @@ def download_one(entry: dict) -> None:
         return
 
     print(f"[{tag}] downloading {url}")
-    subprocess.run(
-        [
-            require("yt-dlp"),
-            "-f", "mp4/bestvideo[ext=mp4]+bestaudio[ext=m4a]/best",
-            "--merge-output-format", "mp4",
-            "-o", str(out_video),
-            "--write-info-json",
-            "--no-write-playlist-metafiles",
-            url,
-        ],
-        check=True,
-    )
+    cmd = [
+        require("yt-dlp"),
+        "-f", "mp4/bestvideo[ext=mp4]+bestaudio[ext=m4a]/best",
+        "--merge-output-format", "mp4",
+        "-o", str(out_video),
+        "--write-info-json",
+        "--no-write-playlist-metafiles",
+    ]
+    cookies_file = ROOT / "yt-cookies.txt"
+    if cookies_file.exists():
+        cmd += ["--cookies", str(cookies_file)]
+    cmd.append(url)
+    subprocess.run(cmd, check=True)
 
     info_json = VIDEOS / f"{tag}.info.json"
     if info_json.exists():
