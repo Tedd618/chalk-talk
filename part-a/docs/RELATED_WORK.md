@@ -142,6 +142,23 @@ interleaving — is what fills the gap between them.
 
 ---
 
+## Token Granularity — What Recent Work Uses (May 2026)
+
+Three approaches have emerged for tokenizing continuous pen trajectories:
+
+**Discretized point tokens (ScribeTokens, arXiv:2603.02805, 2026)**
+Converts stroke offsets to unit steps (Bresenham decomposition), then compresses with BPE into a fixed vocabulary. Makes handwriting compatible with standard LM machinery. Achieves 17.33% CER vs 70.29% for raw vectors on sentence generation. Still point-level but discrete.
+
+**Stroke-level latent tokens (DiffInk, arXiv:2509.23624, 2025)**
+Trains a stroke VAE (InkVAE) with OCR + style losses, then runs a latent diffusion transformer (DiT) over the compact latent codes. Current SotA for text-to-online handwriting. 10-30x shorter sequences than point-level. StrokeFusion (arXiv:2503.23752, 2025) does the same non-autoregressively.
+
+**Hierarchical: word planner + stroke diffusion decoder (Option D)**
+Generate word-level bounding box plan autoregressively, then decode each word's strokes via a small stroke diffusion model. Natural fit for speech-stroke interleaving — word boundaries align speech tokens and stroke groups naturally.
+
+**Recommendation for A.4a**: Option D — word-level autoregressive planning + per-word stroke diffusion using a VAE latent pretrained on MathWriting. Keeps sequences tractable, aligns with speech at word boundaries, and matches DiffInk's architecture.
+
+---
+
 ## Novelty summary (as of May 2026)
 
 The closest prior work (arXiv:2603.25870) uses a VLM to *plan* whiteboard

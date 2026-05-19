@@ -1,0 +1,11 @@
+# training outputs — large data, never commit
+output/
+
+# model checkpoints
+checkpoints/
+
+# python
+__pycache__/
+*.pyc
+*.pth
+*.pt

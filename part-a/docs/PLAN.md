@@ -243,16 +243,14 @@ sequence of events:
 [LESSON: "Pythagorean theorem"]
   → word("today")
   → word("we")
-  → word("have")
-  → stroke(points=[[120,80],[180,80]], page=0)   ← draws "a²"
+  → word("have", strokes=[[120,80],[180,80]])   ← draws "a²" while saying "have"
   → word("a")
-  → word("squared")
-  → stroke(points=[[200,80],[200,80]], page=0)   ← draws "+"
-  → word("plus")
+  → word("squared", strokes=[])
+  → word("plus", strokes=[[200,80],[200,80]])   ← draws "+" while saying "plus"
   ...
   → page_break
   → word("now")
-  → stroke(...)
+  → <silent strokes=[[...]]>                   ← draws without speaking
   ...
   → [END]
 ```
@@ -260,6 +258,24 @@ sequence of events:
 The model is trained to predict the next item in the sequence given
 all previous items. At inference, the trigger sentence starts the
 sequence and the model generates the rest.
+
+### Token choice — word-anchored (Option C)
+
+**Decision (May 2026):** Every token is a word. Strokes are attached
+to whichever word the teacher was speaking while drawing them. If the
+teacher draws in silence, a special `<silent>` token holds those strokes.
+
+**Why not point-by-point (Sketch-RNN style):** Sequences become
+thousands of tokens long for a 10-minute lesson — hard to train on.
+
+**Why not stroke-as-token:** Clean, but adds complexity — the model
+has to decide "do I speak or draw next?" as a separate choice.
+
+**Why word-anchored fits OCT:** OCT almost always speaks while writing.
+He names what he draws as he draws it. Words are the natural heartbeat
+of the sequence — strokes just ride along. The model learns to speak
+*and* write at the same time, which is exactly the behavior we want
+to reproduce.
 
 ---
 
