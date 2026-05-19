@@ -33,13 +33,23 @@ import json
 import sys
 from pathlib import Path
 
-A4_DIR  = Path(__file__).resolve().parent
-A2_DIR  = A4_DIR.parent / "a2-alignment"
-A2_OUT  = A2_DIR / "output"
-OUTPUT  = A4_DIR / "output"
+A4_DIR   = Path(__file__).resolve().parent
+A2_DIR   = A4_DIR.parent / "a2-alignment"
+A1_DIR   = A4_DIR.parent / "a1-stroke-extraction"
+A2_OUT   = A2_DIR / "output"
+MANIFEST = A1_DIR / "queue_manifest.json"
+OUTPUT   = A4_DIR / "output"
 
 W = 1280.0  # canvas width  in pixels
 H = 720.0   # canvas height in pixels
+
+
+def load_topics() -> dict[str, str]:
+    """Load tag -> topic mapping from queue_manifest.json."""
+    if not MANIFEST.exists():
+        return {}
+    data = json.loads(MANIFEST.read_text())
+    return {v["tag"]: v.get("topic", "") for v in data.get("videos", [])}
 
 
 # ── helpers ──────────────────────────────────────────────────────────────────
@@ -114,7 +124,7 @@ def encode_stroke(stroke: dict) -> list[list[float]]:
 # ── per-page processing ───────────────────────────────────────────────────────
 
 def process_page(page_events: list[dict], tag: str,
-                 page_idx: int) -> list[dict]:
+                 page_idx: int, topic: str = "") -> list[dict]:
     """Convert one page's events into a word-anchored token sequence.
 
     Returns a list of token dicts (lesson_start, word, silent, end).
@@ -146,7 +156,8 @@ def process_page(page_events: list[dict], tag: str,
     # We walk words in time order and insert any silent strokes that
     # started before the current word's end.
     tokens: list[dict] = []
-    tokens.append({"type": "lesson_start", "tag": tag, "page": page_idx})
+    tokens.append({"type": "lesson_start", "tag": tag, "page": page_idx,
+                   "topic": topic})
 
     silent_idx = 0  # pointer into sorted silent_strokes
 
@@ -181,8 +192,9 @@ def process_page(page_events: list[dict], tag: str,
 
 # ── main ──────────────────────────────────────────────────────────────────────
 
-def align(tag: str) -> None:
+def align(tag: str, topics: dict[str, str] | None = None) -> None:
     events = load_events(tag)
+    topic = (topics or {}).get(tag, "")
 
     # Split events into pages by page_break
     pages: list[list[dict]] = []
@@ -206,7 +218,7 @@ def align(tag: str) -> None:
 
     with out_path.open("w") as f:
         for pi, page_events in enumerate(pages):
-            tokens = process_page(page_events, tag, pi)
+            tokens = process_page(page_events, tag, pi, topic)
             for tok in tokens:
                 f.write(json.dumps(tok, ensure_ascii=False) + "\n")
             if pi < len(pages) - 1:
@@ -232,6 +244,8 @@ def main() -> None:
                     help="Process all videos found in a2-alignment/output/")
     args = ap.parse_args()
 
+    topics = load_topics()
+
     if args.all:
         tags = sorted({p.stem.replace(".events", "")
                        for p in A2_OUT.glob("*.events.jsonl")})
@@ -239,9 +253,9 @@ def main() -> None:
             sys.exit(f"no events files found in {A2_OUT}")
         print(f"processing {len(tags)} videos...")
         for tag in tags:
-            align(tag)
+            align(tag, topics)
     elif args.tag:
-        align(args.tag)
+        align(args.tag, topics)
     else:
         ap.print_help()
         sys.exit(1)
