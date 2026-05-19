@@ -319,6 +319,9 @@ class OCTDataset(Dataset):
 
 # ─── collation ────────────────────────────────────────────────────────────────
 
+MAX_STROKE_CTX = 256   # max stroke contexts per batch (randomly subsampled)
+
+
 def collate_fn(batch: list[dict], pad_id: int = 0) -> dict:
     """Collate a list of episodes into padded tensors.
 
@@ -357,6 +360,14 @@ def collate_fn(batch: list[dict], pad_id: int = 0) -> dict:
             all_wpos.append(pos)
             all_xy.append(xy)
             all_p.append(p)
+
+    # Randomly subsample stroke contexts if too many
+    if len(all_xy) > MAX_STROKE_CTX:
+        idx = random.sample(range(len(all_xy)), MAX_STROKE_CTX)
+        all_bidx = [all_bidx[i] for i in idx]
+        all_wpos = [all_wpos[i] for i in idx]
+        all_xy   = [all_xy[i]   for i in idx]
+        all_p    = [all_p[i]    for i in idx]
 
     strokes = None
     if all_xy:
