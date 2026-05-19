@@ -149,12 +149,55 @@ Qwen base model.
 
 ---
 
+### Method 3 — Qwen fine-tuned to teach like OCT
+
+> Teach Qwen OCT's teaching style, then use the OCT stroke model
+> to render what Qwen says.
+
+```
+"Explain the Pythagorean theorem"
+                    │
+                    ▼
+           ┌─────────────────┐
+           │  Qwen           │
+           │  (fine-tuned on │
+           │  OCT transcripts│
+           │  to teach like  │
+           │  OCT)           │
+           └────────┬────────┘
+                    │ explanation in OCT's teaching style
+                    ▼
+           ┌─────────────────┐
+           │  OCT stroke     │
+           │  model          │
+           │  (from Method 1)│
+           └────────┬────────┘
+                    │
+                    ▼
+    OCT-style explanation, written in OCT's handwriting
+    with Qwen's mathematical depth
+```
+
+**Training data for Qwen fine-tune:** OCT speech transcripts — what
+he says, how he structures explanations, his phrasing and pacing.
+
+**The research question it answers:**
+Can we get the best of both — Qwen's mathematical power AND OCT's
+teaching personality? How does separating language (Qwen) from
+drawing (OCT stroke model) compare to the fully end-to-end models?
+
+**Data needed:** OCT transcripts (text only) for fine-tuning Qwen;
+OCT stroke model from Method 1.
+
+---
+
 ## What we are comparing
 
 | | Math accuracy | OCT style | Novel topics | Stroke quality |
 |---|---|---|---|---|
 | Method 1 (pure OCT, scratch) | OCT's level | ⭐⭐⭐ high | Only seen topics | ⭐⭐⭐ continuous |
 | Method 2 (Qwen end-to-end) | Qwen's level | ⭐⭐ medium | Any topic | ⭐⭐ quantized |
+| Method 3 (Qwen text + OCT strokes) | Qwen's level | ⭐⭐⭐ high | Any topic | ⭐⭐⭐ continuous |
 
 The goal is to see which approach produces a lecture that a real
 student would want to watch.
