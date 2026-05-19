@@ -252,7 +252,8 @@ def main() -> None:
         if not tags:
             sys.exit(f"no events files found in {A2_OUT}")
         print(f"processing {len(tags)} videos...")
-        for tag in tags:
+        for i, tag in enumerate(tags, 1):
+            print(f"[{i}/{len(tags)}] {tag}", flush=True)
             align(tag, topics)
     elif args.tag:
         align(args.tag, topics)
