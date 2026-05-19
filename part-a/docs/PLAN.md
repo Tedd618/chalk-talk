@@ -94,104 +94,67 @@ head.
 
 ---
 
-### Method 2 — Qwen speaks, OCT draws
+### Method 2 — Qwen fine-tuned end-to-end
 
-> Use a powerful AI (Qwen) to generate the words. Use a trained OCT
-> stroke model only to render the handwriting.
-
-```
-"Explain the Pythagorean theorem"
-                    │
-                    ▼
-           ┌─────────────────┐
-           │  Qwen           │
-           │  (knows math,   │
-           │  generates text)│
-           └────────┬────────┘
-                    │ spoken explanation, word by word
-                    ▼
-           ┌─────────────────┐
-           │  OCT stroke     │
-           │  model          │
-           │  (renders each  │
-           │  word as strokes│
-           │  in OCT's hand) │
-           └────────┬────────┘
-                    │
-                    ▼
-    Qwen's explanation, written in OCT's handwriting
-```
-
-**Training data for the OCT stroke model:** same events.jsonl, but
-the model is only trained on the stroke-generation task — given the
-words being spoken and what is already on the board, draw the next
-stroke.
-
-**What Qwen contributes:** mathematical correctness and the ability
-to handle novel problems OCT never covered.
-
-**What the OCT stroke model contributes:** handwriting style, spatial
-layout, timing.
-
-**The research question it answers:**
-Does separating thinking (Qwen) from writing (OCT model) produce
-better lectures than a single model doing both?
-
-**Data needed:** same OCT corpus for the stroke model; Qwen used
-as-is with no training.
-
----
-
-### Method 3 — Qwen fine-tuned to teach like OCT
-
-> Teach Qwen OCT's teaching style, then use the OCT stroke model
-> to render what Qwen says.
+> Fine-tune Qwen to output words AND strokes simultaneously —
+> one model that speaks and writes in OCT's style, backed by
+> Qwen's mathematical knowledge.
 
 ```
 "Explain the Pythagorean theorem"
                     │
                     ▼
-           ┌─────────────────┐
-           │  Qwen           │
-           │  (fine-tuned on │
-           │  OCT transcripts│
-           │  to teach like  │
-           │  OCT)           │
-           └────────┬────────┘
-                    │ explanation in OCT's teaching style
-                    ▼
-           ┌─────────────────┐
-           │  OCT stroke     │
-           │  model          │
-           │  (same as       │
-           │  Method 2)      │
-           └────────┬────────┘
-                    │
-                    ▼
-    OCT-style explanation, written in OCT's handwriting
-    with Qwen's mathematical depth
+           ┌─────────────────────────┐
+           │  Qwen                   │
+           │  (fine-tuned on OCT     │
+           │  word+stroke sequences) │
+           └────────────┬────────────┘
+                        │
+                        ▼
+    interleaved words + discretized stroke tokens
+    "so" [X25_Y16_D] [X27_Y15_U] "we" "have" [X30_Y10_D] ...
+                        │
+                        ▼
+    decode stroke tokens → pixel coordinates → render
 ```
 
-**Training data for Qwen fine-tune:** OCT speech transcripts — what
-he says, how he structures explanations, his phrasing and pacing.
+**How strokes are represented:** Stroke coordinates are quantized
+into discrete tokens (e.g. X00–X99, Y00–Y99, pen-state) and added
+to Qwen's vocabulary.  Qwen learns to interleave these tokens with
+words, the same way it interleaves punctuation.
+
+**Training data:** the word-anchored `training.jsonl` sequences from
+`align.py`, serialized into token form — words and quantized stroke
+tokens in one flat sequence.  Fine-tuned on OCT corpus only.
+
+**What Qwen contributes:** mathematical correctness, broad topic
+coverage, coherent teaching structure.
+
+**What fine-tuning contributes:** OCT's phrasing, pacing, vocabulary,
+and the spatial layout of strokes learned from real OCT sequences.
 
 **The research question it answers:**
-Can we get the best of both — Qwen's mathematical power AND OCT's
-teaching personality? And how does this compare to training from
-scratch on video data?
+Does a large LLM with discretized stroke output beat a small
+specialized model with continuous stroke output?  Is language
+intelligence worth the loss of stroke precision from quantization?
 
-**Data needed:** OCT transcripts (text only) for fine-tuning Qwen;
-OCT corpus for stroke model.
+**Tradeoffs vs. Method 1:**
+- Language quality: ✅ better (Qwen's math knowledge)
+- Stroke smoothness: ⚠️ lower (quantization artifacts)
+- Spatial coherence: ⚠️ no visual memory of board state
+- Novel topics: ✅ any math topic, not just OCT-seen ones
+
+**Data needed:** OCT `training.jsonl` serialized as token sequences;
+Qwen base model.
 
 ---
 
 ## What we are comparing
 
-| | Math accuracy | OCT style | Novel topics | Data needed |
+| | Math accuracy | OCT style | Novel topics | Stroke quality |
 |---|---|---|---|---|
-| Method 1 (pure OCT) | OCT's level | ⭐⭐⭐ high | Only seen topics | 20+ hrs video |
-| Method 2 (Qwen + OCT draw) | Qwen's level | ⭐⭐ medium | Any topic | 20+ hrs video |
-| Method 3 (Qwen fine-tune + OCT draw) | Qwen's level | ⭐⭐⭐ high | Any topic | 20+ hrs video + transcripts |
+| Method 1 (pure OCT, scratch) | OCT's level | ⭐⭐⭐ high | Only seen topics | ⭐⭐⭐ continuous |
+| Method 2 (Qwen end-to-end) | Qwen's level | ⭐⭐ medium | Any topic | ⭐⭐ quantized |
 
 The goal is to see which approach produces a lecture that a real
 student would want to watch.
