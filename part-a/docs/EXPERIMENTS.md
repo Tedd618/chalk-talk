@@ -297,6 +297,50 @@ Same coherence rating + drift events as A.0, plus:
 A variant is "shipped" if it hits these. We compare across variants
 to identify which approach generalizes best.
 
+### Architecture decisions (May 2026)
+
+**Token granularity: word-anchored (Option C)**
+Every token is a spoken word.  Strokes are attached to the word being
+said while drawing them.  Silent pen movements become `<silent>` tokens.
+Chosen because OCT almost always speaks while writing — words are the
+natural heartbeat of the sequence.
+
+**Training from scratch on OCT data only**
+MathWriting weights are NOT used — OCT's tablet writing style is
+different enough that MathWriting pretraining would pull the model
+toward the wrong distribution.  The model learns OCT's style purely
+from the 1,191 extracted videos.
+
+**Architecture (research-backed choices)**
+- Outer transformer: 4 layers, d=256, 8 heads, sinusoidal PE, pre-norm
+- Stroke decoder: 2 layers, d=128, 4 heads, cross-attention to word ctx
+- Global OCT style embedding: single learned vector added to every position
+- Stroke coordinates: absolute normalized (x,y) ∈ [0,1]², not Δ offsets
+- Stroke output: MSE for (x,y), cross-entropy for pen state {mid,up,stop}
+- Weight tying: word embedding ↔ word prediction head (saves params)
+- Total: ~5M parameters
+
+**Three-phase curriculum (Curriculum Learning for VL tasks, arXiv:2410.15509)**
+1. Stroke decoder only — teaches geometry before language
+2. Outer LM only — teaches word sequence patterns
+3. Joint training at lower LR — end-to-end fine-tuning
+
+**Regularization**
+- Dropout 0.3 throughout (per-head on attention)
+- AdamW, weight decay 0.02
+- Batch size 32 (small batches act as implicit regularization at this scale)
+- Early stopping, patience 5 epochs
+- Token-level UNK masking 5% during training
+
+**Loss**  `L = L_word + 0.1 · L_stroke`
+Both terms are tracked separately for monitoring.
+
+**Deliverable:** `experiments/a4-train/` (shared across all A.4 variants)
+  - `align.py`  — events.jsonl → word-anchored training.jsonl
+  - `data.py`   — vocabulary, dataset, augmentation, collation
+  - `model.py`  — OCTModel (outer transformer + stroke decoder)
+  - `train.py`  — three-phase curriculum training loop
+
 ### Deliverables
 - `experiments/a4a-1-stroke-anchored-mw-pretrain/` — MathWriting →
   OCT 5 h, the immediate target.
