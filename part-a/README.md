@@ -1,23 +1,34 @@
-# Part A — Real-time stroke-level reactive tutor
+# Part A — learning a teacher's board and voice from video
 
-A vision-language model that runs in a closed loop: at each step, it
-looks at the current canvas image + speech history and decides the
-**next single action** (one spoken phrase or one drawing primitive).
-The canvas updates and the model is called again.
+## Question
 
-This is the research target — Method A in the architecture doc. Where
-Part B commits to a full script, Part A reads the board every step
-and is structurally able to react (to its own past output, to student
-input, to mistakes).
+> Can handwriting strokes and spoken words act as context for each other?
 
-## Layout
-- [docs/PLAN.md](docs/PLAN.md) — architecture, output representation, milestones
-- [docs/EXPERIMENTS.md](docs/EXPERIMENTS.md) — concrete experiments to run, in order
-- [docs/RELATED_WORK.md](docs/RELATED_WORK.md) — Sketch-RNN and SketchAgent: what we adopt, what we don't
-- [experiments/](experiments/) — code per experiment as we go
+Measured on 1,191 Organic Chemistry Tutor lectures with one flat
+interleaved transformer and a 7-condition, 3-seed ablation. Answer: the
+board helps predict the next word (+0.125 nats, robust); carrying pen
+tokens in the same sequence costs more than that (−0.42 nats); speech does
+not help predict the pen. The model does not draw legibly. Details and the
+reasoning are in the report.
 
-## Status
-Planning. No code yet. Critical path is **stroke extraction from
-Khan Academy and Organic Chemistry Tutor videos** (Experiment A.1) —
-without clean stroke data we can't train. Frontier-VLM baseline
-(A.0) runs in parallel as a comparison target.
+## Documents
+
+- [docs/report/report.pdf](docs/report/report.pdf) — the report (source: `report.tex`, `references.bib`)
+- [docs/METHOD1_CONTEXT_EXPERIMENT.md](docs/METHOD1_CONTEXT_EXPERIMENT.md) — experiment design, every bug found, v1 and v2 results
+- [docs/EXPERIMENTS.md](docs/EXPERIMENTS.md) — what was actually run, A.1 → A.4
+- [docs/PLAN.md](docs/PLAN.md) — what was learned and what comes next
+- [docs/RELATED_WORK.md](docs/RELATED_WORK.md) — the papers this builds on
+- [docs/archive/](docs/archive/) — the May 2026 plans, kept as written
+- [PROGRESS.md](PROGRESS.md) — dated diary
+
+## Experiments
+
+| dir | what it does | status |
+|---|---|---|
+| `experiments/a1-stroke-extraction/` | YouTube video → per-stroke `(x, y, t)` via skeleton extraction; queue workers for 1,191 videos | done |
+| `experiments/a2-alignment/` | Whisper word timestamps + strokes → time-ordered `events.jsonl` | done |
+| `experiments/a3-sketchrnn/` | stroke-only transformer on QuickDraw / MathWriting (standalone; not used by a4) | done |
+| `experiments/a4-train/` | `align.py` (events → word-anchored training data), the flat stroke+speech model, the context-ablation notebook, results | done — see its README |
+
+Data for a4 (52 MB zip) is on the
+[`data-v1` release](https://github.com/Tedd618/chalk-talk/releases/tag/data-v1).

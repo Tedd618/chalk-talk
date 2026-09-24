@@ -1,5 +1,12 @@
 # Related Work — Part A
 
+> **2026-09-24:** every arXiv ID in this file was re-verified against arxiv.org
+> (titles, authors, dates all correct; DiffInk was subsequently accepted at ICLR 2026).
+> The full, verified bibliography used by the Method 1 report — 36 entries covering
+> handwriting/sketch generation, lecture-video analysis, multimodal transformers,
+> context/attention behaviour, measurement, and LLM drawing agents — is
+> `report/references.bib`.
+
 Two papers anchor the design. Each addresses one half of the problem.
 
 ---
@@ -124,52 +131,30 @@ domain, speech-stroke alignment, or learning from real teacher video.
 
 ---
 
-## How they combine for Method A
+## Where this stands (September 2026)
 
-| Phase of Method A | Inheritance |
-|---|---|
-| A.0 baseline (frontier VLM in a loop, no training) | SketchAgent for the loop mechanic and grid prompt |
-| A.1 stroke extraction from videos | Neither — original work, see [EXPERIMENTS.md](EXPERIMENTS.md) |
-| A.2 speech-stroke alignment | Whisper + frame timing — neither paper |
-| A.3 stroke-only generative model (Sketch-RNN baseline) | Sketch-RNN architecture directly |
-| A.4 multimodal stroke + speech model | Sketch-RNN backbone + new conditioning layers |
+The plan above was written in May 2026 around a trained, stroke-level,
+speech-conditioned model. That model was built and measured
+(`METHOD1_CONTEXT_EXPERIMENT.md`, `report/report.pdf`): strokes carry real
+information about the next spoken word (+0.125 nats, three seeds), but
+carrying pen tokens in the same sequence costs more than that (−0.42 nats),
+and speech carries no usable information about the next pen move at this
+scale. The joint stroke+speech generation goal was not reached.
 
-The two papers together cover roughly: "how do we run the loop?"
-(SketchAgent) and "how do we generate strokes?" (Sketch-RNN). The
-work specific to Method A — math/text strokes, multimodal
-conditioning, KA + Organic Chemistry Tutor extraction, speech-stroke
-interleaving — is what fills the gap between them.
+Consequences for this reading list:
 
----
+- **Sketch-RNN** stays the output representation for pen data and the reason
+  the model has a mixture-density head. Its VAE/LSTM parts were never used.
+- **SketchAgent**, **DiagrammerGPT**, **LayoutGPT** and **AutomaTikZ** — LLMs
+  that emit a drawing *plan* with coordinates — are now the model for the next
+  step: an agent that writes the lecture as `say`/`draw` steps on Part B's
+  script schema, rendered by the player.
+- **arXiv:2603.25870** (speech-synchronized whiteboard generation from 24
+  demos) remains the closest prior work; the difference is that we have the
+  1,191-video corpus to learn pacing and layout conventions from.
+- The token-granularity survey (ScribeTokens, DiffInk, StrokeFusion) is
+  relevant again only if primitives are later rendered in the teacher's own
+  handwriting; DiffInk (ICLR 2026) would be the tool.
 
-## Token Granularity — What Recent Work Uses (May 2026)
-
-Three approaches have emerged for tokenizing continuous pen trajectories:
-
-**Discretized point tokens (ScribeTokens, arXiv:2603.02805, 2026)**
-Converts stroke offsets to unit steps (Bresenham decomposition), then compresses with BPE into a fixed vocabulary. Makes handwriting compatible with standard LM machinery. Achieves 17.33% CER vs 70.29% for raw vectors on sentence generation. Still point-level but discrete.
-
-**Stroke-level latent tokens (DiffInk, arXiv:2509.23624, 2025)**
-Trains a stroke VAE (InkVAE) with OCR + style losses, then runs a latent diffusion transformer (DiT) over the compact latent codes. Current SotA for text-to-online handwriting. 10-30x shorter sequences than point-level. StrokeFusion (arXiv:2503.23752, 2025) does the same non-autoregressively.
-
-**Hierarchical: word planner + stroke diffusion decoder (Option D)**
-Generate word-level bounding box plan autoregressively, then decode each word's strokes via a small stroke diffusion model. Natural fit for speech-stroke interleaving — word boundaries align speech tokens and stroke groups naturally.
-
-**Recommendation for A.4a**: Option D — word-level autoregressive planning + per-word stroke diffusion using a VAE latent pretrained on MathWriting. Keeps sequences tractable, aligns with speech at word boundaries, and matches DiffInk's architecture.
-
----
-
-## Novelty summary (as of May 2026)
-
-The closest prior work (arXiv:2603.25870) uses a VLM to *plan* whiteboard
-content and renders it — 24 demos, no training from real video. VideoSketcher
-(2602.15819) generates art-domain sketching video, not educational content.
-
-**What exists**: VLM-planned whiteboard rendering, art sketch generation,
-speech-to-text, text-to-speech.
-
-**What does not exist**: A model trained end-to-end on real teaching video
-that *jointly* generates speech tokens and pen strokes as a single learned
-sequence, in the style of a specific teacher.
-
-This is the gap our work fills.
+Full citations for all of the above: `report/references.bib` (36 entries, each
+verified against its arXiv/publisher page on 2026-09-24).

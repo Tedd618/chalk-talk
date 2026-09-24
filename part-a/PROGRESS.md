@@ -5,6 +5,76 @@ things ended up. Newest entries on top.
 
 ---
 
+## 2026-09-24 — Method 1 measured, report written, direction changed
+
+### Where the corpus ended up
+
+The queue workers ran on 8–12 lab machines through the summer (30 machines
+triggered YouTube rate limiting). 1,191 of the 1,372 manifest videos
+completed cleanly. `align.py` turned them into word-anchored
+`training.jsonl`: 12.5M tokens, 78% pen points, 22% words, 5.5k vocabulary
+after normalizing Whisper's punctuation and case. The full set is
+`output.zip` (52 MB) on the `data-v1` GitHub release; the a1/a2
+intermediates live only on the lab filesystem.
+
+### Training attempts, in order
+
+- **v1 — word-anchored `OCTModel` with a stroke sub-decoder and a
+  three-phase curriculum.** Words came out coherent; strokes collapsed to a
+  scribble at one spot. The architecture blocked strokes from ever feeding
+  back into the word context — which was the whole research question — so
+  it was replaced.
+- **v2 — one flat interleaved sequence, delta-xy coordinates, Huber loss.**
+  Type head learned well (0.11 CE), word head reached ppl ~100, but the xy
+  loss plateaued at epoch 3 and generation was 87% words with a dot-cluster
+  of strokes. Diagnosis: a deterministic regression head predicts the mean
+  of every direction the pen could go, which is ~0; plus three more bugs —
+  training windows never included a page start (P ≈ 0.01%), `<silent>` was
+  forbidden at generation although 49% of drawing starts from it, and a
+  tensor-as-dict-key bug had been feeding `<unk>` as the trigger, so every
+  generation test before this was testing garbage input.
+- **v3 — mixture-density head (20 Gaussians, Graves 2013), start-biased
+  windows, `<silent>` allowed, pen weight 4→2, absolute position added to
+  the stroke input.** Verified the MDN math against scipy before shipping.
+
+### The experiment
+
+Rather than "does it draw", the question became measurable: hold everything
+fixed and remove one kind of context at a time. Seven conditions on the
+same validation windows — `full`, `mask_strokes`, `nostroke_hidden`,
+`drop_strokes`, `mask_words`, `noword_hidden`, `drop_words` — three seeds
+each, bootstrap over windows rather than tokens. Two things had to be
+fixed on the way: the first version's `drop` conditions changed the window
+length (23.5%), confounding event information with positional spacing, so
+the `hidden` conditions were added; and two runs of the same condition
+with the same seed differed by 0.14 nats, so single-seed results were
+thrown out. Every notebook was smoke-tested on CPU first; that caught a
+NaN from an all-masked causal row and an empty-window crash before either
+reached Colab.
+
+### Result
+
+The board helps predict the next word: +0.125 nats, all seeds, all CIs.
+Carrying pen tokens in the same stream costs −0.266 (attention dilution)
+and −0.151 (positional spreading), so the word-only model wins by 0.29
+nats (ppl 47 vs 63). Speech does not help the pen (−0.037, robust). The
+model still cannot draw: scatter in the right region, no characters. Not
+a data-size problem — pen loss was still falling — but a "what to draw"
+problem: the data has no symbol labels and the speech is not a usable
+substitute at this size.
+
+### Report and direction
+
+Wrote the report (`docs/report/`, LaTeX, 36 verified references) for the
+portfolio. Decision: stop pursuing stroke-level joint generation at this
+scale. Next is an agent that writes the lesson as `say`/`draw` steps with
+coordinates on Part B's schema — the flat model showed the information is
+there but that mixing modalities in one stream is the wrong way to carry
+it. Archived the May plans (Methods 2/3, A.0, A.3.5, A.4b/c, stroke-as-
+token track) under `docs/archive/`.
+
+---
+
 ## 2026-05-11 (Sunday) — Research direction crystallised
 
 ### The core question
