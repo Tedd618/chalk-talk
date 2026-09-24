@@ -37,7 +37,7 @@ Seven conditions, all transforms of the *same* sampled windows:
 | `noword_hidden` | `<mask>`, hidden from attention | real | stroke NLL |
 | `drop_words` | removed (shorter window) | real | stroke NLL |
 
-Design doc: `part-a/docs/METHOD1_CONTEXT_EXPERIMENT.md`
+Design doc: `research/docs/METHOD1_CONTEXT_EXPERIMENT.md`
 
 **Before running:**
 1. Runtime → Change runtime type → GPU (T4)

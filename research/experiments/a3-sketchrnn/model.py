@@ -1,6 +1,6 @@
 """Transformer-based stroke generator with MDN and pen-state outputs.
 
-This is the architecture committed in part-a/docs/PLAN.md: a single
+This is the architecture committed in the May 2026 plan (research/docs/archive/PLAN_2026-05.md): a single
 causal transformer over flat token sequence, with multiple per-position
 output heads (MDN over Δx,Δy + categorical over pen-state). For Track 2
 we use it unconditionally — train on QuickDraw cat data, no canvas or

@@ -1,4 +1,4 @@
-# Part A — learning a teacher's board and voice from video
+# Research — learning a teacher's board and voice from video
 
 ## Question
 
@@ -16,7 +16,7 @@ reasoning are in the report.
 - [docs/report/report.pdf](docs/report/report.pdf) — the report (source: `report.tex`, `references.bib`)
 - [docs/METHOD1_CONTEXT_EXPERIMENT.md](docs/METHOD1_CONTEXT_EXPERIMENT.md) — experiment design, every bug found, v1 and v2 results
 - [docs/EXPERIMENTS.md](docs/EXPERIMENTS.md) — what was actually run, A.1 → A.4
-- [docs/PLAN.md](docs/PLAN.md) — what was learned and what comes next
+- [docs/CONCLUSIONS.md](docs/CONCLUSIONS.md) — what was learned; the direction it led to is the repository-level [PLAN.md](../PLAN.md)
 - [docs/RELATED_WORK.md](docs/RELATED_WORK.md) — the papers this builds on
 - [docs/archive/](docs/archive/) — the May 2026 plans, kept as written
 - [PROGRESS.md](PROGRESS.md) — dated diary

@@ -1,4 +1,7 @@
-# Part A — Progress Log
+# Research — Progress Log
+
+*(This directory was `part-a/` until September 2026; older entries below use
+that name and its paths.)*
 
 A running diary of what I worked on, what decisions were made, and where
 things ended up. Newest entries on top.
@@ -68,10 +71,12 @@ substitute at this size.
 Wrote the report (`docs/report/`, LaTeX, 36 verified references) for the
 portfolio. Decision: stop pursuing stroke-level joint generation at this
 scale. Next is an agent that writes the lesson as `say`/`draw` steps with
-coordinates on Part B's schema — the flat model showed the information is
-there but that mixing modalities in one stream is the wrong way to carry
-it. Archived the May plans (Methods 2/3, A.0, A.3.5, A.4b/c, stroke-as-
-token track) under `docs/archive/`.
+coordinates on the tutor's script schema (`tutor/docs/SCHEMA.md`) — the flat
+model showed the information is there but that mixing modalities in one
+stream is the wrong way to carry it. Archived the May plans (Methods 2/3, A.0, A.3.5, A.4b/c, stroke-as-
+token track) under `docs/archive/`. Renamed the directories to match the
+new shape of the project: `part-a/` → `research/` (this, finished) and
+`part-b/` → `tutor/` (the script format and player the next step builds on).
 
 ---
 

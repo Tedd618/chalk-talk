@@ -8,5 +8,6 @@ stroke-as-token track, Methods 2 and 3).
 - `PLAN_2026-05.md` — the original research plan and three-method comparison
 - `EXPERIMENTS_plan_2026-05.md` — the original experiment specifications
 
-For what was actually executed see `../EXPERIMENTS.md`; for the current
-plan see `../PLAN.md`.
+For what was actually executed see `../EXPERIMENTS.md`, for what was
+concluded see `../CONCLUSIONS.md`, and for the current plan see the
+repository-level `PLAN.md`.

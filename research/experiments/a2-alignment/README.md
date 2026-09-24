@@ -26,7 +26,7 @@ The Whisper model and venv live with A.1 (we share dependencies). From
 the project root:
 
 ```bash
-cd part-a/experiments/a1-stroke-extraction
+cd research/experiments/a1-stroke-extraction
 
 # 1. Transcribe
 .venv/bin/python ../a2-alignment/stt.py oct

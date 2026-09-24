@@ -1,69 +1,65 @@
 # AI Blackboard Tutor
 
 An AI tutor that teaches math by drawing on a virtual blackboard while
-explaining out loud, in sync — like a teacher on YouTube.
+explaining out loud, in sync — the way a teacher on YouTube does.
 
-The project has two parts. Part A is the research: can a model learn a
-teacher's board and voice *together* from real lecture video? Part B is the
-player and script format that a lesson runs on. After the Part A
-experiment, the two meet: the next step is an agent that writes lessons in
-Part B's format.
+## What happened so far
 
-## Part A — research: learning from real teacher video ([part-a/](part-a/))
+**May 2026 — two ways to make a lesson.** The quick one: a language model
+writes the whole lesson up front as a script of `say` / `draw` steps with
+board coordinates, and a browser player speaks and animates it. That was
+built first and works end to end (`tutor/`). The hard one — the research
+question — was whether a model could learn a teacher's *board and voice
+together* from real lecture video, and then generate both stroke by
+stroke, in that teacher's hand.
 
-1,191 Organic Chemistry Tutor videos were turned into an aligned sequence
-of spoken words and pen movements (12.5M tokens), and one transformer was
-trained on that sequence to answer one question: **does what is on the
-board help predict the next word, and does what is said help predict the
-next pen move?**
+**June–September 2026 — the experiment.** 1,191 Organic Chemistry Tutor
+videos were turned into an aligned sequence of spoken words and pen
+movements (12.5M tokens). One transformer was trained on that sequence,
+and a controlled ablation — seven context conditions on identical data,
+three training seeds each — measured whether each modality actually helps
+predict the other (`research/`, full write-up in
+[research/docs/report/report.pdf](research/docs/report/report.pdf)).
 
-The answer, from a controlled ablation (7 context conditions × 3 seeds):
+**What it found.**
 
-| | result |
+| question | answer |
 |---|---|
-| Board → next word | **yes**, +0.125 nats, robust across seeds |
-| Cost of carrying pen tokens in the same sequence | −0.42 nats — more than the gain |
-| Speech → next pen move | no usable signal |
+| Does the board help predict the next word? | **Yes.** +0.125 nats, robust across seeds. |
+| Is it worth carrying pen tokens in the same sequence to get that? | **No.** Doing so costs −0.42 nats — more than the gain — through attention dilution and positional spreading. |
+| Does the speech help predict the next pen move? | **No** usable signal. |
+| Can the model draw? | No. Scatter in the right place on the board, never a character — and not for lack of data, but because nothing in the data says *which symbol* is being drawn. |
 
-So the two signals are related, but mixing them into one flat stream is the
-wrong way to use that relationship at this scale. Full write-up:
-[part-a/docs/report/report.pdf](part-a/docs/report/report.pdf)
-(LaTeX source and verified bibliography alongside it).
+**What changed because of it.** The two signals are related, but one flat
+stream is the wrong way to carry the relationship at this scale. The
+decision of *what to say and what to draw* is a language problem; *putting
+it on the board* is a rendering problem; the experiment says to keep them
+apart. That is exactly the shape the script + player already has. So the
+path that started as the quick MVP becomes the main line — with the lesson
+written by an agent rather than pasted from a chat — and the stroke corpus
+becomes reference material for how this teacher paces and lays out a
+lesson, and later for rendering in his handwriting, instead of the thing a
+model learns to emit point by point. What comes next is in
+[PLAN.md](PLAN.md).
 
-## Part B — script format and browser player ([part-b/](part-b/))
+## Repository
 
-A lesson is a JSON script of `say` / `draw` / `say_draw` steps; draws are
-shapes with board coordinates (`line`, `rect`, `triangle`, `circle`,
-`text`). The browser player speaks the text and animates the drawing
-stroke by stroke. Working end to end.
-
-This is the foundation of the **next step**: a language-model agent that
-writes the script — what to say, what to draw, where — using the Part A
-corpus for the teacher's pacing and layout conventions. See
-[part-a/docs/PLAN.md](part-a/docs/PLAN.md).
+```
+research/   the finished experiment — data pipeline (video → strokes → aligned
+            events), the flat stroke+speech model, the ablation, results,
+            report; PROGRESS.md is the dated diary; docs/archive/ has the
+            May plans as written
+tutor/      lesson script schema (say / draw / say_draw with coordinates),
+            browser player, the prompt that produces scripts; what the next
+            step builds on
+PLAN.md     the direction after the experiment
+```
 
 ## Data
 
-The training data (1,191 videos → `training.jsonl`, 52 MB zipped) is not in
-git. It is attached to the
+The training data (1,191 videos → `training.jsonl`, 52 MB zipped) is not
+in git. It is attached to the
 [`data-v1` release](https://github.com/Tedd618/chalk-talk/releases/tag/data-v1)
-as `output.zip`. The pipeline that produced it is in
-`part-a/experiments/a1-stroke-extraction/` and `a2-alignment/`.
-
-## Layout
-
-```
-part-a/
-  docs/            PLAN.md · EXPERIMENTS.md · METHOD1_CONTEXT_EXPERIMENT.md
-                   RELATED_WORK.md · report/ (tex, bib, pdf) · archive/ (May plans)
-  PROGRESS.md      dated diary of the work
-  experiments/
-    a1-stroke-extraction/   video → strokes (skeleton extraction, queue workers)
-    a2-alignment/           Whisper words + strokes → events.jsonl
-    a3-sketchrnn/           stroke-only transformer pretraining (standalone)
-    a4-train/               flat stroke+speech transformer, context ablation, results
-part-b/
-  docs/            SCHEMA.md · PROMPT.md · PLAN.md
-  player/          index.html — open in a browser
-  scripts/         example lesson
-```
+as `output.zip`; the pipeline that produced it is
+`research/experiments/a1-stroke-extraction/` → `a2-alignment/` →
+`a4-train/align.py`.

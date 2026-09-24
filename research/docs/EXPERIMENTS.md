@@ -1,4 +1,4 @@
-# Part A — Experiments, as actually run
+# Research — Experiments, as actually run
 
 This is the record of what was executed, in order, with what came out.
 The original May 2026 plan — which also had a frontier-VLM baseline (A.0),
@@ -159,11 +159,12 @@ metrics, summary); `docs/report/`.
 
 - **A.0 frontier-VLM baseline, A.3.5 symbol labeling, A.4a-1/a-2 (MathWriting
   backbone), A.4b (Qwen-Math), A.4c (symbol-anchored), the stroke-as-token
-  track, A.5 deployment, and PLAN's Methods 2/3 (Qwen fine-tunes).** The
+  track, A.5 deployment, and the May plan's Methods 2/3 (Qwen fine-tunes).** The
   ablation answered the core question for the flat design, and the answer
-  argues against continuing down this branch at this scale. The next step
-  ([PLAN.md](PLAN.md)) changes approach — an agent that plans what to say
-  and draw — rather than adding variants of the same model.
+  argues against continuing down this branch at this scale (see
+  [CONCLUSIONS.md](CONCLUSIONS.md)). The next step ([../../PLAN.md](../../PLAN.md))
+  changes approach — an agent that plans what to say and draw — rather than
+  adding variants of the same model.
 - Two cheap checks were considered and left open: a larger stroke-only
   model generating unconditionally (does this data support legible
   handwriting at all?), and a larger `full` model (does word content start

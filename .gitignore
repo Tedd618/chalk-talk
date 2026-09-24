@@ -15,18 +15,18 @@ venv/
 .idea/
 *.swp
 
-# Part A — large data and intermediate artifacts (regenerable)
-part-a/experiments/*/videos/*.mp4
-part-a/experiments/*/videos/*.webm
-part-a/experiments/*/videos/*.info.json
-part-a/experiments/*/frames/
-part-a/experiments/*/output/*.mp4
-part-a/experiments/*/output/*.webm
-part-a/experiments/*/output/*.png
+# research — large data and intermediate artifacts (regenerable)
+research/experiments/*/videos/*.mp4
+research/experiments/*/videos/*.webm
+research/experiments/*/videos/*.info.json
+research/experiments/*/frames/
+research/experiments/*/output/*.mp4
+research/experiments/*/output/*.webm
+research/experiments/*/output/*.png
 
 # Keep extracted stroke data, events, and per-video metadata in git (small, useful)
-!part-a/experiments/*/videos/*.meta.json
-!part-a/experiments/*/output/*.jsonl
+!research/experiments/*/videos/*.meta.json
+!research/experiments/*/output/*.jsonl
 
 # Local model checkpoints (will get big later)
 *.ckpt
@@ -34,13 +34,13 @@ part-a/experiments/*/output/*.png
 *.bin
 
 # Per-experiment checkpoint dirs but keep training logs
-part-a/experiments/*/checkpoints/*.pt
-part-a/experiments/*/checkpoints/*.ckpt
+research/experiments/*/checkpoints/*.pt
+research/experiments/*/checkpoints/*.ckpt
 
 # Per-experiment downloaded raw data (regenerable from download script)
-part-a/experiments/*/data/*.npz
-part-a/experiments/*/data/*.tgz
-part-a/experiments/*/data/mathwriting-2024/
+research/experiments/*/data/*.npz
+research/experiments/*/data/*.tgz
+research/experiments/*/data/mathwriting-2024/
 
 # Logs
 *.log

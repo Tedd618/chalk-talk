@@ -1,4 +1,4 @@
-# Related Work — Part A
+# Related Work — research
 
 > **2026-09-24:** every arXiv ID in this file was re-verified against arxiv.org
 > (titles, authors, dates all correct; DiffInk was subsequently accepted at ICLR 2026).
@@ -147,8 +147,8 @@ Consequences for this reading list:
   the model has a mixture-density head. Its VAE/LSTM parts were never used.
 - **SketchAgent**, **DiagrammerGPT**, **LayoutGPT** and **AutomaTikZ** — LLMs
   that emit a drawing *plan* with coordinates — are now the model for the next
-  step: an agent that writes the lecture as `say`/`draw` steps on Part B's
-  script schema, rendered by the player.
+  step: an agent that writes the lecture as `say`/`draw` steps on the tutor's
+  script schema (`tutor/docs/SCHEMA.md`), rendered by its player.
 - **arXiv:2603.25870** (speech-synchronized whiteboard generation from 24
   demos) remains the closest prior work; the difference is that we have the
   1,191-video corpus to learn pacing and layout conventions from.
