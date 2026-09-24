@@ -1,29 +1,36 @@
-"""Word-anchored OCT lecture generation model.
+"""Flat interleaved OCT lecture generation model (v3 — MDN stroke head).
 
 Architecture
 ------------
-Outer transformer (causal LM, GPT-style):
-  Predicts the next word token given all prior words.
-  Hidden states at each word position condition the stroke decoder.
+Single causal transformer operating on a flat interleaved sequence
+of WORD and STROKE tokens:
 
-Stroke decoder (per word):
-  Given a word's context vector, autoregressively generates the pen
-  movements the teacher makes while saying that word.
-  Strokes are absolute normalized coordinates (x,y) ∈ [0,1]².
+    [W:"today"] [W:"we"] [S:dx,dy,MID] [S:dx,dy,UP] [W:"a"] ...
 
-Style embedding:
-  A single learned vector added to every outer position.
-  Captures OCT's consistent global writing style.
+Stroke coordinates are scaled deltas (offsets from the previous stroke
+point, multiplied by DELTA_SCALE).
 
-Pen states used by the stroke decoder:
-  0  P_MID  — mid-stroke (pen down, more points follow)
-  1  P_UP   — end of this stroke (pen lifts; next begins a new stroke)
-  2  P_STOP — all strokes for this word are done (stop token)
+v3: the xy head is a Mixture Density Network (Graves 2013). Handwriting
+deltas are multimodal — the pen can go any direction next depending on
+the letter being drawn. A deterministic regression head predicts the
+MEAN of those options (~0) and generated strokes collapse to dots (the
+v2 failure mode). The MDN learns the actual distribution and generation
+SAMPLES from it.
 
-Training phases:
-  Phase 1 — stroke decoder only  (word embeddings + stroke decoder)
-  Phase 2 — outer LM only        (outer transformer)
-  Phase 3 — joint, lower LR      (everything end-to-end)
+At each position t, the model predicts what comes at t+1:
+  - Type head:  {WORD=0, STROKE=1}
+  - Word head:  word ID from vocab  (active when next is WORD)
+  - XY head:    MDN params — K bivariate Gaussians (active when next is STROKE)
+  - Pen head:   {MID=0, UP=1}       (active when next is STROKE)
+
+Loss:
+    L = L_type + L_word + xy_weight * L_xy_nll + L_pen
+
+    - L_word uses label_smoothing=0.1
+    - L_xy_nll is the MDN negative log-likelihood (can go NEGATIVE as
+      the density sharpens; starts ~3, good models reach < 0)
+    - L_pen uses mild class weights [1.0, 2.0] (4.0 over-predicted UP
+      at sampling time and shredded strokes into dashes)
 """
 from __future__ import annotations
 import math
@@ -31,17 +38,28 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-P_MID  = 0
-P_UP   = 1
-P_STOP = 2
+# Token types
+WORD_TYPE   = 0
+STROKE_TYPE = 1
+
+# Pen states (no P_STOP — type transition handles it)
+PEN_MID = 0
+PEN_UP  = 1
+
+# Delta scaling: raw deltas have overall std ~0.07. Scale by 20 → std ~1.25,
+# which means the MDN's initial sigma=exp(0)=1 starts near the data scale.
+DELTA_SCALE = 20.0
+
+# MDN mixture components (Graves 2013 used 20)
+MDN_K = 20
 
 
 # ─── helpers ─────────────────────────────────────────────────────────────────
 
 class SinusoidalPE(nn.Module):
-    """Fixed sinusoidal positional encoding (Vaswani et al. 2017)."""
+    """Fixed sinusoidal positional encoding."""
 
-    def __init__(self, d_model: int, max_len: int = 4096, dropout: float = 0.1):
+    def __init__(self, d_model: int, max_len: int = 2048, dropout: float = 0.1):
         super().__init__()
         self.dropout = nn.Dropout(dropout)
         pe = torch.zeros(max_len, d_model)
@@ -54,351 +72,327 @@ class SinusoidalPE(nn.Module):
         self.register_buffer("pe", pe.unsqueeze(0))  # (1, max_len, d_model)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.dropout(x + self.pe[:, : x.size(1)])
+        return self.dropout(x + self.pe[:, :x.size(1)])
 
 
 def causal_mask(sz: int, device: torch.device) -> torch.Tensor:
-    """Upper-triangular boolean mask for causal (autoregressive) attention."""
+    """Upper-triangular boolean mask for causal attention."""
     return torch.triu(torch.ones(sz, sz, device=device, dtype=torch.bool), diagonal=1)
 
 
-# ─── stroke decoder ───────────────────────────────────────────────────────────
+# ─── MDN helpers (bivariate Gaussian mixture, Graves 2013 eq. 23-25) ─────────
 
-class StrokeDecoder(nn.Module):
-    """Small autoregressive transformer decoder for stroke generation.
+def mdn_split(params: torch.Tensor):
+    """Split raw MDN params (..., 6K) into mixture components.
 
-    At each step it takes the previous (x, y, p) point and predicts the
-    next one.  Cross-attention to the word context vector conditions the
-    generation on what word is being written.
+    Returns log_pi (..., K), mu (..., K, 2), sigma (..., K, 2), rho (..., K).
+    Always computed in float32 — fp16 logsumexp/exp under AMP can NaN.
+    """
+    params = params.float()
+    K = MDN_K
+    log_pi  = F.log_softmax(params[..., :K], dim=-1)
+    mu      = params[..., K:3 * K].reshape(*params.shape[:-1], K, 2)
+    log_sig = params[..., 3 * K:5 * K].reshape(*params.shape[:-1], K, 2).clamp(-4.0, 3.0)
+    rho     = 0.95 * torch.tanh(params[..., 5 * K:6 * K])
+    return log_pi, mu, log_sig.exp(), rho
 
-    Teacher-forced during training; autoregressive at inference.
+
+def mdn_nll(params: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+    """Negative log-likelihood of target (N, 2) under the GMM (N, 6K)."""
+    log_pi, mu, sigma, rho = mdn_split(params)
+    t  = target.float().unsqueeze(-2)                    # (N, 1, 2)
+    zx = (t[..., 0] - mu[..., 0]) / sigma[..., 0]        # (N, K)
+    zy = (t[..., 1] - mu[..., 1]) / sigma[..., 1]
+    one_m_rho2 = (1 - rho ** 2).clamp(min=1e-6)
+    z = zx ** 2 + zy ** 2 - 2 * rho * zx * zy
+    log_gauss = (-z / (2 * one_m_rho2)
+                 - torch.log(sigma[..., 0]) - torch.log(sigma[..., 1])
+                 - 0.5 * torch.log(one_m_rho2) - math.log(2 * math.pi))
+    return -torch.logsumexp(log_pi + log_gauss, dim=-1)  # (N,)
+
+
+def mdn_sample(params: torch.Tensor, pi_temp: float = 1.0,
+               sigma_temp: float = 1.0) -> tuple[float, float]:
+    """Sample one (dx, dy) from the mixture. params: flat (6K,) tensor.
+
+    sigma_temp < 1 reduces noise (cleaner strokes); pi_temp < 1 sharpens
+    the component choice.
+    """
+    log_pi, mu, sigma, rho = mdn_split(params.unsqueeze(0))
+    log_pi, mu, sigma, rho = log_pi[0], mu[0], sigma[0], rho[0]
+    k  = int(torch.multinomial(F.softmax(log_pi / max(pi_temp, 1e-6), dim=-1), 1))
+    sx = sigma[k, 0] * sigma_temp
+    sy = sigma[k, 1] * sigma_temp
+    r  = rho[k]
+    z1, z2 = torch.randn(2, device=params.device)
+    dx = mu[k, 0] + sx * z1
+    dy = mu[k, 1] + sy * (r * z1 + torch.sqrt((1 - r ** 2).clamp(min=1e-6)) * z2)
+    return float(dx), float(dy)
+
+
+# ─── flat interleaved model ──────────────────────────────────────────────────
+
+class FlatOCTModel(nn.Module):
+    """Flat interleaved OCT lecture generation model (v3 — MDN).
+
+    Words and stroke points share one causal transformer context.
+    Each position is either WORD (type=0) or STROKE (type=1).
+    Stroke coordinates are scaled delta-xy (offsets * DELTA_SCALE).
     """
 
     def __init__(
         self,
-        d_ctx: int,
-        d_model: int = 128,
-        n_layers: int = 2,
-        n_heads: int = 4,
-        max_len: int = 200,
-        dropout: float = 0.3,
+        vocab_size:  int,
+        d_model:     int = 384,
+        n_layers:    int = 6,
+        n_heads:     int = 8,
+        d_ff:        int = 1536,
+        max_seq_len: int = 2048,
+        dropout:     float = 0.05,
+        pad_idx:     int = 0,
     ):
         super().__init__()
-        self.d_model = d_model
-        self.max_len = max_len
+        self.d_model    = d_model
+        self.vocab_size = vocab_size
+        self.pad_idx    = pad_idx
 
-        # Embed pen state (3 categories) and concatenate with raw (x, y)
-        self.p_embed = nn.Embedding(3, 16)
-        self.pt_proj = nn.Linear(2 + 16, d_model)      # (x, y, p_emb) → d
-        self.pos_emb = nn.Embedding(max_len + 2, d_model)  # learned pos emb
+        # ── input embeddings ──────────────────────────────────────────────────
+        self.word_embed = nn.Embedding(vocab_size, d_model, padding_idx=pad_idx)
+        self.type_embed = nn.Embedding(2, d_model)          # WORD=0, STROKE=1
+        self.stroke_proj = nn.Linear(2, d_model)            # scaled (dx,dy) → d_model
+        self.pen_embed  = nn.Embedding(2, d_model)          # MID=0, UP=1
+        self.pos_enc    = SinusoidalPE(d_model, max_len=max_seq_len, dropout=dropout)
 
-        # Project word context to d_model for cross-attention memory
-        self.ctx_proj = nn.Linear(d_ctx, d_model)
-
-        # Start-of-sequence learnable token
-        self.start_tok = nn.Parameter(torch.randn(d_model) * 0.02)
-
-        # Transformer decoder
-        dec_layer = nn.TransformerDecoderLayer(
+        # ── causal transformer ────────────────────────────────────────────────
+        enc_layer = nn.TransformerEncoderLayer(
             d_model=d_model,
             nhead=n_heads,
-            dim_feedforward=d_model * 4,
+            dim_feedforward=d_ff,
             dropout=dropout,
             batch_first=True,
             activation="gelu",
             norm_first=True,
         )
-        self.transformer = nn.TransformerDecoder(dec_layer, num_layers=n_layers)
-        self.norm = nn.LayerNorm(d_model)
-
-        # Output heads
-        self.xy_head = nn.Linear(d_model, 2)   # predict absolute (x, y)
-        self.p_head  = nn.Linear(d_model, 3)   # predict pen-state logits
-
-    # ── internal helpers ──────────────────────────────────────────────────────
-
-    def _encode_pts(
-        self, xy: torch.Tensor, p: torch.Tensor, offset: int = 1
-    ) -> torch.Tensor:
-        """Encode (x,y,p) tensors → d_model with positional embedding.
-
-        Args:
-            xy:     (B, T, 2)
-            p:      (B, T) long
-            offset: positional index of the first token (default 1, after start)
-        Returns:
-            (B, T, d_model)
-        """
-        T = xy.size(1)
-        p_emb = self.p_embed(p)                          # (B, T, 16)
-        enc   = self.pt_proj(torch.cat([xy, p_emb], -1)) # (B, T, d_model)
-        pos   = torch.arange(offset, offset + T, device=xy.device)
-        enc   = enc + self.pos_emb(pos).unsqueeze(0)
-        return enc
-
-    def _start(self, B: int, device: torch.device) -> torch.Tensor:
-        """Start token: (B, 1, d_model)."""
-        return (
-            self.start_tok.unsqueeze(0).unsqueeze(0).expand(B, 1, -1)
-            + self.pos_emb(torch.zeros(1, dtype=torch.long, device=device))
-        )
-
-    # ── forward (teacher-forced) ──────────────────────────────────────────────
-
-    def forward(
-        self,
-        ctx:      torch.Tensor,           # (B, d_ctx)
-        tgt_xy:   torch.Tensor,           # (B, S, 2)  full target incl. stop
-        tgt_p:    torch.Tensor,           # (B, S)     full target pen states
-        pad_mask: torch.Tensor | None = None,  # (B, S) bool, True = pad
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        """Teacher-forced forward.
-
-        Input to decoder:  [start, tgt[:S-1]]  — length S
-        Prediction target: tgt[:S]              — length S
-
-        Prediction at position i corresponds to target at position i,
-        so computing loss is simply: loss(pred, tgt) with no extra shift.
-
-        Returns:
-            xy_pred:  (B, S, 2)
-            p_logits: (B, S, 3)
-        """
-        B, S, _ = tgt_xy.shape
-
-        # Decoder input: start token + first S-1 ground-truth points
-        inp_pts = self._encode_pts(tgt_xy[:, :-1], tgt_p[:, :-1])  # (B, S-1, d)
-        inp     = torch.cat([self._start(B, ctx.device), inp_pts], dim=1)  # (B, S, d)
-
-        # Memory: word context as a length-1 sequence
-        mem  = self.ctx_proj(ctx).unsqueeze(1)  # (B, 1, d_model)
-
-        # Causal self-attention mask
-        cmask = causal_mask(S, ctx.device)
-
-        out  = self.transformer(tgt=inp, memory=mem,
-                                tgt_mask=cmask,
-                                tgt_key_padding_mask=pad_mask)
-        out  = self.norm(out)
-
-        return self.xy_head(out), self.p_head(out)   # (B,S,2), (B,S,3)
-
-    # ── generation (autoregressive) ───────────────────────────────────────────
-
-    @torch.no_grad()
-    def generate(
-        self,
-        ctx:         torch.Tensor,   # (1, d_ctx)
-        max_len:     int | None = None,
-        temperature: float = 1.0,
-    ) -> list[list[float]]:
-        """Autoregressively generate stroke points for one word.
-
-        Returns list of [x, y, p] values.
-        The last entry has p == P_STOP.
-        """
-        max_len = max_len or self.max_len
-        device  = ctx.device
-        mem     = self.ctx_proj(ctx).unsqueeze(1)   # (1, 1, d_model)
-        seq     = self._start(1, device)             # (1, 1, d_model)
-        pts: list[list[float]] = []
-
-        for step in range(max_len):
-            L     = seq.size(1)
-            cmask = causal_mask(L, device)
-            out   = self.transformer(tgt=seq, memory=mem, tgt_mask=cmask)
-            out   = self.norm(out)
-
-            xy_p  = self.xy_head(out[0, -1])       # (2,)
-            p_log = self.p_head(out[0, -1])         # (3,)
-
-            x = float(xy_p[0].clamp(0, 1))
-            y = float(xy_p[1].clamp(0, 1))
-            p = int(torch.distributions.Categorical(
-                logits=p_log / max(temperature, 1e-6)
-            ).sample())
-
-            pts.append([x, y, p])
-            if p == P_STOP:
-                break
-
-            # Encode new point and append
-            xy_t = torch.tensor([[[x, y]]], dtype=torch.float32, device=device)
-            p_t  = torch.tensor([[p]], dtype=torch.long, device=device)
-            new  = self._encode_pts(xy_t, p_t, offset=step + 1)  # (1,1,d)
-            seq  = torch.cat([seq, new], dim=1)
-            if seq.size(1) > max_len:
-                seq = seq[:, -max_len:]
-
-        return pts
-
-
-# ─── outer model ─────────────────────────────────────────────────────────────
-
-class OCTModel(nn.Module):
-    """Word-anchored OCT lecture generation model.
-
-    Trained from scratch on OCT teaching videos only.
-    Generates word sequences and, for each word, the pen strokes
-    the teacher draws while saying that word.
-    """
-
-    def __init__(
-        self,
-        vocab_size:     int,
-        d_model:        int = 256,
-        n_layers:       int = 4,
-        n_heads:        int = 8,
-        max_seq_len:    int = 2048,
-        d_stroke:       int = 128,
-        n_stroke_layers:int = 2,
-        dropout:        float = 0.3,
-        pad_idx:        int = 0,
-    ):
-        super().__init__()
-        self.d_model   = d_model
-        self.vocab_size = vocab_size
-        self.pad_idx   = pad_idx
-
-        # ── outer causal transformer ──────────────────────────────────────────
-        self.word_embed  = nn.Embedding(vocab_size, d_model, padding_idx=pad_idx)
-        self.pos_enc     = SinusoidalPE(d_model, max_len=max_seq_len, dropout=dropout)
-        # Single learnable OCT style vector — one teacher, one style
-        self.style_embed = nn.Parameter(torch.randn(1, 1, d_model) * 0.02)
-
-        enc_layer = nn.TransformerEncoderLayer(
-            d_model=d_model, nhead=n_heads,
-            dim_feedforward=d_model * 4,
-            dropout=dropout, batch_first=True,
-            activation="gelu", norm_first=True,
-        )
         self.transformer = nn.TransformerEncoder(enc_layer, num_layers=n_layers)
         self.norm_out    = nn.LayerNorm(d_model)
 
-        # Word prediction head — weight-tied with embedding (saves params,
-        # standard in LM literature)
+        # ── output heads ──────────────────────────────────────────────────────
+        self.type_head = nn.Linear(d_model, 2)
         self.word_head = nn.Linear(d_model, vocab_size, bias=False)
         self.word_head.weight = self.word_embed.weight
+        self.xy_head  = nn.Linear(d_model, 6 * MDN_K)   # MDN: pi, mu_xy, sig_xy, rho
+        self.pen_head = nn.Linear(d_model, 2)
 
-        # ── stroke decoder ────────────────────────────────────────────────────
-        self.stroke_decoder = StrokeDecoder(
-            d_ctx=d_model, d_model=d_stroke,
-            n_layers=n_stroke_layers, n_heads=4,
-            dropout=dropout,
-        )
+        # Pen class weights: PEN_UP is ~17.5% of stroke points. Mild 2x weight.
+        self.register_buffer("pen_weight", torch.tensor([1.0, 2.0]))
 
         self._init_weights()
 
-    # ── weight init ───────────────────────────────────────────────────────────
-
     def _init_weights(self):
         nn.init.normal_(self.word_embed.weight, std=0.02)
+        nn.init.normal_(self.type_embed.weight, std=0.02)
+        nn.init.normal_(self.pen_embed.weight, std=0.02)
         for name, p in self.named_parameters():
-            if "word_embed" in name or "style_embed" in name:
+            if any(s in name for s in ("word_embed", "type_embed", "pen_embed")):
                 continue
             if p.dim() > 1 and "weight" in name:
                 nn.init.xavier_uniform_(p)
             elif "bias" in name:
                 nn.init.zeros_(p)
+        # Near-zero init for the MDN head → log_sigma starts at 0 (sigma=1),
+        # right at the scaled data std (~1.25). Stable from step one.
+        nn.init.normal_(self.xy_head.weight, std=0.001)
+        nn.init.zeros_(self.xy_head.bias)
 
-    # ── outer transformer forward ─────────────────────────────────────────────
+    def _embed(self, token_types, word_ids, xy, pen):
+        h = self.type_embed(token_types)
+        word_mask   = (token_types == WORD_TYPE).unsqueeze(-1).float()
+        stroke_mask = (token_types == STROKE_TYPE).unsqueeze(-1).float()
+        h = h + self.word_embed(word_ids) * word_mask
+        h = h + (self.stroke_proj(xy) + self.pen_embed(pen)) * stroke_mask
+        return self.pos_enc(h)
 
-    def encode_words(
-        self,
-        word_ids: torch.Tensor,                  # (B, T)
-        pad_mask: torch.Tensor | None = None,    # (B, T) bool
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        """Run the outer transformer.
-
-        Returns:
-            hidden: (B, T, d_model) — context vectors for stroke conditioning
-            logits: (B, T, vocab_size) — next-word prediction logits
-        """
-        B, T = word_ids.shape
-        x = self.word_embed(word_ids)        # (B, T, d_model)
-        x = x + self.style_embed            # add OCT style bias
-        x = self.pos_enc(x)
-
-        cmask  = causal_mask(T, word_ids.device)
-        hidden = self.transformer(
-            x, mask=cmask,
-            src_key_padding_mask=pad_mask,
-            is_causal=True,
-        )
+    def forward(self, token_types, word_ids, xy, pen, pad_mask):
+        B, T = token_types.shape
+        h = self._embed(token_types, word_ids, xy, pen)
+        cmask  = causal_mask(T, h.device)
+        hidden = self.transformer(h, mask=cmask, src_key_padding_mask=pad_mask,
+                                  is_causal=True)
         hidden = self.norm_out(hidden)
-        logits = self.word_head(hidden)     # (B, T, vocab_size)
-        return hidden, logits
+        return {
+            "type_logits": self.type_head(hidden),
+            "word_logits": self.word_head(hidden),
+            "xy_params":   self.xy_head(hidden),     # MDN params (B, T, 6K)
+            "pen_logits":  self.pen_head(hidden),
+        }
 
-    # ── stroke decoder forward ────────────────────────────────────────────────
+    def compute_loss(self, outputs, token_types, word_ids, xy, pen,
+                     pad_mask, xy_weight=1.0):
+        pred_type = outputs["type_logits"][:, :-1]
+        pred_word = outputs["word_logits"][:, :-1]
+        pred_xy   = outputs["xy_params"][:, :-1]
+        pred_pen  = outputs["pen_logits"][:, :-1]
 
-    def decode_strokes(
+        tgt_type = token_types[:, 1:]
+        tgt_word = word_ids[:, 1:]
+        tgt_xy   = xy[:, 1:]
+        tgt_pen  = pen[:, 1:]
+        tgt_pad  = pad_mask[:, 1:]
+        valid    = ~tgt_pad
+
+        # Type loss
+        l_type = F.cross_entropy(
+            pred_type[valid], tgt_type[valid]
+        ) if valid.any() else pred_type.new_tensor(0.0)
+
+        # Word loss with label smoothing (helps generalization with large vocab)
+        word_pos = valid & (tgt_type == WORD_TYPE)
+        l_word = F.cross_entropy(
+            pred_word[word_pos], tgt_word[word_pos],
+            ignore_index=self.pad_idx,
+            label_smoothing=0.1,
+        ) if word_pos.any() else pred_word.new_tensor(0.0)
+
+        # XY loss: MDN negative log-likelihood. Can go NEGATIVE as the
+        # density sharpens — starts ~3.0, good models reach < 0.
+        stroke_pos = valid & (tgt_type == STROKE_TYPE)
+        l_xy = mdn_nll(pred_xy[stroke_pos], tgt_xy[stroke_pos]).mean() \
+               if stroke_pos.any() else pred_xy.new_tensor(0.0)
+
+        # Pen loss with mild class weighting
+        l_pen = F.cross_entropy(
+            pred_pen[stroke_pos], tgt_pen[stroke_pos],
+            weight=self.pen_weight,
+        ) if stroke_pos.any() else pred_pen.new_tensor(0.0)
+
+        total = l_type + l_word + xy_weight * l_xy + l_pen
+
+        return {
+            "total": total,
+            "type":  l_type,
+            "word":  l_word,
+            "xy":    l_xy,
+            "pen":   l_pen,
+        }
+
+    # ── generation ────────────────────────────────────────────────────────────
+
+    @torch.no_grad()
+    def generate(
         self,
-        ctx:        torch.Tensor,            # (N, d_model)
-        stroke_xy:  torch.Tensor,            # (N, S, 2)
-        stroke_p:   torch.Tensor,            # (N, S)
-        stroke_pad: torch.Tensor | None = None,  # (N, S) bool
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        """Run stroke decoder for N (word context, stroke sequence) pairs.
+        seed_types:  torch.Tensor,   # (1, S) long
+        seed_words:  torch.Tensor,   # (1, S) long
+        seed_xy:     torch.Tensor,   # (1, S, 2) float — scaled delta-xy
+        seed_pen:    torch.Tensor,   # (1, S) long
+        vocab:       dict[str, int],
+        max_len:     int   = 1000,
+        temperature: float = 0.8,
+        top_k:       int   = 50,
+        stroke_bias: float = 0.0,
+        pen_temperature: float = 1.0,
+        pi_temp:     float = 1.0,
+        sigma_temp:  float = 0.65,
+    ) -> list[dict]:
+        """Autoregressive generation. Strokes are SAMPLED from the MDN.
 
-        N is the total number of words-with-strokes across the batch.
-
-        Returns:
-            xy_pred:  (N, S, 2)
-            p_logits: (N, S, 3)
+        sigma_temp=0.65 (Graves-style) gives cleaner strokes; raise toward
+        1.0 for more variety. Returns tokens with ABSOLUTE coordinates:
+            {'type': 'word', 'word_id': int, 'word': str}
+            {'type': 'stroke', 'x': float, 'y': float, 'pen': int}
         """
-        return self.stroke_decoder(ctx, stroke_xy, stroke_p, stroke_pad)
+        self.eval()
+        device = seed_types.device
+        id2word = {v: k for k, v in vocab.items()}
+        forbidden = {vocab.get("<pad>", -1), vocab.get("<unk>", -1),
+                     vocab.get("<silent>", -1), vocab.get("<page_break>", -1)}
+        forbidden.discard(-1)
 
-    # ── full forward ──────────────────────────────────────────────────────────
+        types = seed_types.clone()
+        words = seed_words.clone()
+        xys   = seed_xy.clone()       # scaled deltas
+        pens  = seed_pen.clone()
+        generated = []
 
-    def forward(
-        self,
-        word_ids:   torch.Tensor,                    # (B, T)
-        word_pad:   torch.Tensor | None = None,      # (B, T) bool
-        stroke_ctx: torch.Tensor | None = None,      # (N, d_model) pre-extracted
-        stroke_xy:  torch.Tensor | None = None,      # (N, S, 2)
-        stroke_p:   torch.Tensor | None = None,      # (N, S)
-        stroke_pad: torch.Tensor | None = None,      # (N, S) bool
-    ) -> tuple[torch.Tensor, torch.Tensor | None, torch.Tensor | None]:
-        """Full model forward.
+        # Track absolute position (accumulate unscaled seed deltas)
+        abs_x, abs_y = 0.0, 0.0
+        for i in range(seed_types.size(1)):
+            if seed_types[0, i] == STROKE_TYPE:
+                abs_x += float(seed_xy[0, i, 0]) / DELTA_SCALE
+                abs_y += float(seed_xy[0, i, 1]) / DELTA_SCALE
 
-        If stroke_ctx is None, only the word forward pass runs.
-        stroke_ctx should be pre-extracted from hidden states by the
-        training loop using (batch_idx, word_pos) indices.
+        for _ in range(max_len):
+            T = types.size(1)
+            if T > 1024:
+                types = types[:, -1024:]
+                words = words[:, -1024:]
+                xys   = xys[:, -1024:]
+                pens  = pens[:, -1024:]
+                T = 1024
 
-        Returns:
-            word_logits: (B, T, vocab_size)
-            xy_pred:     (N, S, 2) or None
-            p_logits:    (N, S, 3) or None
-        """
-        hidden, word_logits = self.encode_words(word_ids, word_pad)
+            pad = torch.zeros(1, T, dtype=torch.bool, device=device)
+            out = self.forward(types, words, xys, pens, pad)
 
-        xy_pred, p_logits = None, None
-        if stroke_ctx is not None and stroke_xy is not None:
-            xy_pred, p_logits = self.decode_strokes(
-                stroke_ctx, stroke_xy, stroke_p, stroke_pad
-            )
+            # Sample type
+            type_logits = out["type_logits"][0, -1].clone()
+            type_logits[STROKE_TYPE] += stroke_bias
+            type_probs = F.softmax(type_logits, dim=-1)
+            next_type = int(torch.multinomial(type_probs, 1))
 
-        return word_logits, xy_pred, p_logits
+            if next_type == WORD_TYPE:
+                word_logits = out["word_logits"][0, -1].clone()
+                for fid in forbidden:
+                    word_logits[fid] = -float("inf")
+                word_logits = word_logits / max(temperature, 1e-6)
+                if top_k > 0:
+                    topk_vals, topk_idx = torch.topk(word_logits, min(top_k, word_logits.size(0)))
+                    mask = torch.full_like(word_logits, -float("inf"))
+                    mask.scatter_(0, topk_idx, topk_vals)
+                    word_logits = mask
+                probs = F.softmax(word_logits, dim=-1)
+                word_id = int(torch.multinomial(probs, 1))
+                if id2word.get(word_id) == "<eos>":
+                    break
 
-    # ── utils ─────────────────────────────────────────────────────────────────
+                generated.append({"type": "word", "word_id": word_id,
+                                  "word": id2word.get(word_id, "?")})
+                types = torch.cat([types, torch.tensor([[WORD_TYPE]], device=device)], 1)
+                words = torch.cat([words, torch.tensor([[word_id]], device=device)], 1)
+                xys   = torch.cat([xys, torch.zeros(1, 1, 2, device=device)], 1)
+                pens  = torch.cat([pens, torch.zeros(1, 1, dtype=torch.long, device=device)], 1)
+
+            else:
+                # SAMPLE a scaled delta from the mixture, unscale, accumulate
+                sdx, sdy = mdn_sample(out["xy_params"][0, -1],
+                                      pi_temp=pi_temp, sigma_temp=sigma_temp)
+                dx = sdx / DELTA_SCALE
+                dy = sdy / DELTA_SCALE
+
+                # Accumulate to absolute, clamp to canvas
+                new_x = max(0.0, min(1.0, abs_x + dx))
+                new_y = max(0.0, min(1.0, abs_y + dy))
+
+                # Recompute actual scaled delta after clamping
+                actual_sdx = (new_x - abs_x) * DELTA_SCALE
+                actual_sdy = (new_y - abs_y) * DELTA_SCALE
+                abs_x, abs_y = new_x, new_y
+
+                # Sample pen
+                pen_logits = out["pen_logits"][0, -1].clone()
+                pen_logits = pen_logits / max(pen_temperature, 1e-6)
+                pen_probs  = F.softmax(pen_logits, dim=-1)
+                pen_state  = int(torch.multinomial(pen_probs, 1))
+
+                generated.append({"type": "stroke", "x": new_x,
+                                  "y": new_y, "pen": pen_state})
+
+                # Feed back SCALED delta (model works in scaled delta space)
+                types = torch.cat([types, torch.tensor([[STROKE_TYPE]], device=device)], 1)
+                words = torch.cat([words, torch.zeros(1, 1, dtype=torch.long, device=device)], 1)
+                xys   = torch.cat([xys, torch.tensor([[[actual_sdx, actual_sdy]]], device=device)], 1)
+                pens  = torch.cat([pens, torch.tensor([[pen_state]], device=device)], 1)
+
+        return generated
 
     @property
     def n_params(self) -> int:
         return sum(p.numel() for p in self.parameters())
-
-    def extract_ctx(
-        self,
-        hidden:     torch.Tensor,   # (B, T, d_model)
-        batch_idx:  torch.Tensor,   # (N,) long
-        word_pos:   torch.Tensor,   # (N,) long
-    ) -> torch.Tensor:
-        """Extract word context vectors for stroke decoding.
-
-        Args:
-            hidden:    outer transformer hidden states
-            batch_idx: which batch item each stroke belongs to
-            word_pos:  which word position in that batch item
-
-        Returns: (N, d_model)
-        """
-        return hidden[batch_idx, word_pos]

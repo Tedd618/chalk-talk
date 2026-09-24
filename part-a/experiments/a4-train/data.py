@@ -1,31 +1,32 @@
-"""Dataset and vocabulary for OCT word-anchored training sequences.
+"""Dataset for flat interleaved OCT word+stroke sequences (v2 — scaled delta-xy).
 
-Loads training.jsonl files produced by align.py and provides
-(word_sequence, stroke_contexts) pairs for the three training phases.
+Loads training.jsonl files (word-anchored format from align.py) and
+flattens them into interleaved sequences at load time:
+
+    [W:"today"] [W:"we"] [S:dx,dy,MID] [S:dx,dy,UP] [W:"a"] ...
+
+Stroke coordinates are stored as **scaled deltas** (offsets from the
+previous stroke point, multiplied by DELTA_SCALE). Raw deltas have
+overall std ~0.07; scaling by 20 makes std ~1.25 — right at the MDN's
+initial sigma of 1.
+
+Each position in the flat sequence has:
+    token_type: 0=WORD, 1=STROKE
+    word_id:    vocab index (0 for stroke positions)
+    xy:         scaled (dx, dy) delta coords (0,0 for word positions)
+    pen:        pen state MID=0 / UP=1 (0 for word positions)
 
 Vocabulary
 ----------
-Built from all word tokens in the training files.  Words appearing
-fewer than min_freq times are mapped to <unk>.
+Built from all word tokens in the training files.
 
 Special tokens:
-  <pad>        index 0   — padding (also used as padding_idx in embedding)
+  <pad>        index 0   — padding
   <unk>        index 1   — unknown / rare word
   <bos>        index 2   — beginning of sequence
   <eos>        index 3   — end of sequence
   <silent>     index 4   — draws without speaking
   <page_break> index 5   — board cleared between problems
-
-Stroke encoding
----------------
-Each word's strokes are flattened into one (x,y,p) sequence:
-  p = 0  mid-stroke point
-  p = 1  last point of a stroke (pen lifts; next point begins new stroke)
-  p = 2  stop token (no more strokes for this word)
-
-The sequence always ends with the stop token.  Cap per word:
-  MAX_STROKES_PER_WORD = 8   strokes kept per word
-  MAX_STROKE_SEQ       = 150 total points (including stop)
 """
 from __future__ import annotations
 import json
@@ -36,7 +37,17 @@ from pathlib import Path
 import torch
 from torch.utils.data import Dataset
 
-# ── vocabulary ────────────────────────────────────────────────────────────────
+# ── token types ──────────────────────────────────────────────────────────────
+
+WORD_TYPE   = 0
+STROKE_TYPE = 1
+
+# ── pen states (no P_STOP — type transition handles it) ──────────────────────
+
+PEN_MID = 0
+PEN_UP  = 1
+
+# ── vocabulary ───────────────────────────────────────────────────────────────
 
 PAD       = "<pad>"
 UNK       = "<unk>"
@@ -46,24 +57,20 @@ SILENT    = "<silent>"
 PGBREAK   = "<page_break>"
 SPECIALS  = [PAD, UNK, BOS, EOS, SILENT, PGBREAK]
 
-# ── stroke encoding caps ──────────────────────────────────────────────────────
+# ── stroke encoding caps ─────────────────────────────────────────────────────
 
-MAX_STROKES_PER_WORD = 8
-MAX_STROKE_SEQ       = 150   # total points per word incl. stop token
+MAX_STROKES_PER_WORD = 8       # max strokes kept per word
+MAX_POINTS_PER_WORD  = 150     # max total points per word
 
-P_MID  = 0
-P_UP   = 1
-P_STOP = 2
+# ── delta scaling ────────────────────────────────────────────────────────────
+
+DELTA_SCALE = 20.0  # raw deltas overall std ~0.07 → scaled std ~1.25
 
 
-# ─── vocabulary helpers ───────────────────────────────────────────────────────
+# ─── vocabulary helpers ──────────────────────────────────────────────────────
 
 def build_vocab(training_dir: Path, min_freq: int = 2) -> dict[str, int]:
-    """Count word frequencies and build index mapping.
-
-    Only tokens with type == 'word' are counted; special tokens are
-    prepended at fixed indices regardless of frequency.
-    """
+    """Count word frequencies and build index mapping."""
     counter: Counter = Counter()
     for path in sorted(training_dir.glob("*.training.jsonl")):
         for line in path.read_text().splitlines():
@@ -88,105 +95,155 @@ def load_vocab(path: Path) -> dict[str, int]:
     return json.loads(path.read_text())
 
 
-# ─── stroke encoding ──────────────────────────────────────────────────────────
+# ─── augmentation ────────────────────────────────────────────────────────────
 
-def encode_strokes(
-    strokes: list,
-    max_total: int = MAX_STROKE_SEQ,
-    max_per_word: int = MAX_STROKES_PER_WORD,
-) -> tuple[torch.Tensor, torch.Tensor]:
-    """Flatten a list of strokes into (xy, p) tensors.
-
-    Adds the stop token at the end.  Caps total length and stroke count.
-
-    Args:
-        strokes: list of stroke sequences, each [[x,y,p], ...]
-                 (p in data = 0 mid, 1 last-in-stroke)
-
-    Returns:
-        xy: FloatTensor(S, 2)  — normalized coordinates
-        p:  LongTensor(S)      — pen states (P_MID / P_UP / P_STOP)
-    """
-    xy_list: list[list[float]] = []
-    p_list:  list[int]         = []
-
-    for stroke in strokes[:max_per_word]:
-        for i, pt in enumerate(stroke):
-            x, y = float(pt[0]), float(pt[1])
-            # last point in a stroke → P_UP; others → P_MID
-            pen = P_UP if (i == len(stroke) - 1) else P_MID
-            xy_list.append([x, y])
-            p_list.append(pen)
-            if len(xy_list) >= max_total - 1:
-                break
-        if len(xy_list) >= max_total - 1:
-            break
-
-    if not xy_list:
-        return torch.zeros(0, 2), torch.zeros(0, dtype=torch.long)
-
-    # Append stop token
-    xy_list.append([0.0, 0.0])
-    p_list.append(P_STOP)
-
-    return (
-        torch.tensor(xy_list, dtype=torch.float32),
-        torch.tensor(p_list,  dtype=torch.long),
-    )
-
-
-# ─── augmentation ─────────────────────────────────────────────────────────────
-
-def augment_xy(
-    xy: torch.Tensor,
+def augment_delta_xy(
+    dxy: torch.Tensor,
     scale_lo: float = 0.85,
     scale_hi: float = 1.15,
-    jitter:   float = 0.008,
+    jitter:   float = 0.1,
 ) -> torch.Tensor:
-    """Scale + jitter stroke coordinates; clamp to [0,1].
+    """Scale + jitter SCALED delta stroke coordinates. No clamping.
 
-    Conservative ranges based on research findings for OCT-style writing.
+    jitter=0.1 on scaled deltas ≈ 0.005 on raw coords (~30% of delta std).
     """
-    if xy.size(0) == 0:
-        return xy
+    if dxy.size(0) == 0:
+        return dxy
     scale = random.uniform(scale_lo, scale_hi)
-    xy    = xy * scale + torch.randn_like(xy) * jitter
-    return xy.clamp(0.0, 1.0)
+    return dxy * scale + torch.randn_like(dxy) * jitter
 
 
-def unk_mask(word_id: int, unk_id: int, rate: float) -> int:
-    """Randomly replace a word token with <unk> (token-level masking)."""
-    return unk_id if random.random() < rate else word_id
+# ─── absolute to scaled delta conversion ──────────────────────────────────────
+
+def abs_to_delta_scaled(
+    types: list[int],
+    xys:   list[list[float]],
+    scale: float = DELTA_SCALE,
+) -> list[list[float]]:
+    """Convert absolute xy to SCALED delta-xy for stroke tokens.
+
+    For each STROKE token, delta = (current_abs - last_stroke_abs) * scale.
+    For WORD tokens, delta = (0, 0).
+    last_stroke_abs starts at (0, 0) and is NOT reset at word boundaries,
+    so jumps between stroke groups are captured as larger deltas.
+    """
+    delta_xys: list[list[float]] = []
+    last_x, last_y = 0.0, 0.0
+    for t, xy in zip(types, xys):
+        if t == STROKE_TYPE:
+            dx = (xy[0] - last_x) * scale
+            dy = (xy[1] - last_y) * scale
+            delta_xys.append([dx, dy])
+            last_x, last_y = xy[0], xy[1]
+        else:
+            delta_xys.append([0.0, 0.0])
+    return delta_xys
 
 
-# ─── dataset ──────────────────────────────────────────────────────────────────
+# ─── flatten page ────────────────────────────────────────────────────────────
 
-class OCTDataset(Dataset):
-    """One episode = one page from one video.
+def flatten_page(
+    tokens: list[dict],
+    vocab:  dict[str, int],
+    max_points_per_word: int = MAX_POINTS_PER_WORD,
+    max_strokes_per_word: int = MAX_STROKES_PER_WORD,
+) -> dict:
+    """Convert a list of word-anchored tokens into flat interleaved arrays.
 
-    Each episode is a dict:
-        word_ids:       list[int]            word token indices
-        stroke_pos:     list[int]            word positions that have strokes
-        stroke_xys:     list[Tensor(S,2)]    stroke coord sequences
-        stroke_ps:      list[Tensor(S)]      stroke pen-state sequences
-        topic:          str
-        tag:            str
+    Returns dict with parallel lists. XY values are converted to
+    SCALED delta-xy (multiplied by DELTA_SCALE).
+    """
+    unk_id    = vocab[UNK]
+    silent_id = vocab[SILENT]
+
+    token_types: list[int]         = []
+    word_ids:    list[int]         = []
+    abs_xys:     list[list[float]] = []
+    pens:        list[int]         = []
+
+    for tok in tokens:
+        t = tok["type"]
+
+        if t == "word":
+            wid = vocab.get(tok["word"], unk_id)
+            token_types.append(WORD_TYPE)
+            word_ids.append(wid)
+            abs_xys.append([0.0, 0.0])
+            pens.append(0)
+
+        elif t == "silent":
+            token_types.append(WORD_TYPE)
+            word_ids.append(silent_id)
+            abs_xys.append([0.0, 0.0])
+            pens.append(0)
+
+        else:
+            continue  # skip lesson_start, page_break, end
+
+        # Emit STROKE tokens for this word's strokes
+        strokes = tok.get("strokes", [])
+        n_pts = 0
+        for stroke in strokes[:max_strokes_per_word]:
+            for i, pt in enumerate(stroke):
+                if n_pts >= max_points_per_word:
+                    break
+                x, y = float(pt[0]), float(pt[1])
+                pen = PEN_UP if (i == len(stroke) - 1) else PEN_MID
+
+                token_types.append(STROKE_TYPE)
+                word_ids.append(0)
+                abs_xys.append([x, y])
+                pens.append(pen)
+                n_pts += 1
+            if n_pts >= max_points_per_word:
+                break
+
+    # Convert absolute xy to SCALED delta-xy
+    scaled_delta_xys = abs_to_delta_scaled(token_types, abs_xys)
+
+    return {
+        "token_types": token_types,
+        "word_ids":    word_ids,
+        "xys":         scaled_delta_xys,
+        "pens":        pens,
+    }
+
+
+# ─── dataset ─────────────────────────────────────────────────────────────────
+
+class FlatOCTDataset(Dataset):
+    """One episode = one page from one video, flattened into interleaved
+    WORD+STROKE sequence with scaled delta-xy coordinates.
+
+    Returns a window of seq_len tokens from each page.
+    BOS is prepended when the window starts at position 0.
+    EOS is appended when the window ends at the last position.
+
+    Window sampling (v3): pages average ~9,300 tokens, so a uniformly
+    random window starts at position 0 with probability ~0.01% — the
+    model would never see page starts, yet generation always seeds from
+    [BOS + intro words]. Now start_frac of windows begin at position 0
+    and end_frac end at the last token; the rest are uniform.
     """
 
     def __init__(
         self,
         training_dir: Path,
         vocab:        dict[str, int],
+        seq_len:      int   = 512,
         augment:      bool  = False,
-        max_seq_len:  int   = 2048,
         unk_rate:     float = 0.05,
-        min_words:    int   = 5,
+        min_tokens:   int   = 20,
+        start_frac:   float = 0.2,
+        end_frac:     float = 0.1,
     ):
-        self.vocab       = vocab
-        self.augment     = augment
-        self.max_seq_len = max_seq_len
-        self.unk_rate    = unk_rate
-        self.min_words   = min_words
+        self.vocab    = vocab
+        self.seq_len  = seq_len
+        self.augment  = augment
+        self.unk_rate = unk_rate
+        self.min_tokens = min_tokens
+        self.start_frac = start_frac
+        self.end_frac   = end_frac
 
         self.pad_id    = vocab[PAD]
         self.unk_id    = vocab[UNK]
@@ -195,19 +252,17 @@ class OCTDataset(Dataset):
         self.silent_id = vocab[SILENT]
         self.pgbrk_id  = vocab[PGBREAK]
 
-        self.episodes: list[dict] = []
+        self.pages: list[dict] = []
         self._load(training_dir)
-
-    # ── loading ───────────────────────────────────────────────────────────────
 
     def _load(self, training_dir: Path) -> None:
         paths = sorted(training_dir.glob("*.training.jsonl"))
         for path in paths:
             self._load_file(path)
+        total_tokens = sum(len(p["token_types"]) for p in self.pages)
         print(
-            f"[dataset] {len(self.episodes)} episodes "
-            f"from {len(paths)} videos  "
-            f"(augment={self.augment})"
+            f"[dataset] {len(self.pages)} pages from {len(paths)} videos  "
+            f"({total_tokens} total tokens, augment={self.augment})"
         )
 
     def _load_file(self, path: Path) -> None:
@@ -217,182 +272,131 @@ class OCTDataset(Dataset):
             if l.strip()
         ]
         current: list[dict] = []
+        meta: dict = {}
+
         for tok in lines:
             if tok["type"] == "lesson_start":
-                current = [tok]
+                current = []
+                meta = tok
             elif tok["type"] in ("page_break", "end"):
                 if current:
-                    self._process_page(current)
-                    current = []
+                    self._process_page(current, meta)
+                current = []
             else:
-                if current:
-                    current.append(tok)
+                current.append(tok)
+
         if current:
-            self._process_page(current)
+            self._process_page(current, meta)
 
-    def _process_page(self, tokens: list[dict]) -> None:
-        meta   = tokens[0] if tokens[0]["type"] == "lesson_start" else {}
-        topic  = meta.get("topic", "")
-        tag    = meta.get("tag",   "")
-        body   = tokens[1:] if tokens[0]["type"] == "lesson_start" else tokens
+    def _process_page(self, tokens: list[dict], meta: dict) -> None:
+        flat = flatten_page(tokens, self.vocab)
 
-        if not body:
+        if len(flat["token_types"]) < self.min_tokens:
             return
 
-        word_ids:   list[int]           = [self.bos_id]
-        stroke_pos: list[int]           = []
-        stroke_xys: list[torch.Tensor]  = []
-        stroke_ps:  list[torch.Tensor]  = []
-
-        for tok in body:
-            if len(word_ids) >= self.max_seq_len - 1:
-                break
-
-            t = tok["type"]
-
-            if t == "word":
-                wid = self.vocab.get(tok["word"], self.unk_id)
-                pos = len(word_ids)
-                word_ids.append(wid)
-            elif t == "silent":
-                pos = len(word_ids)
-                word_ids.append(self.silent_id)
-            else:
-                continue   # page_break / end handled by caller; skip others
-
-            strokes = tok.get("strokes", [])
-            if strokes:
-                xy, p = encode_strokes(strokes)
-                if xy.size(0) > 1:   # at least one real point + stop
-                    stroke_pos.append(pos)
-                    stroke_xys.append(xy)
-                    stroke_ps.append(p)
-
-        word_ids.append(self.eos_id)
-
-        if len(word_ids) - 2 < self.min_words:   # too short (excl. bos/eos)
-            return
-
-        self.episodes.append({
-            "word_ids":   word_ids,
-            "stroke_pos": stroke_pos,
-            "stroke_xys": stroke_xys,
-            "stroke_ps":  stroke_ps,
-            "topic":      topic,
-            "tag":        tag,
-        })
-
-    # ── dataset interface ─────────────────────────────────────────────────────
+        flat["topic"] = meta.get("topic", "")
+        flat["tag"]   = meta.get("tag", "")
+        self.pages.append(flat)
 
     def __len__(self) -> int:
-        return len(self.episodes)
+        return len(self.pages)
 
     def __getitem__(self, idx: int) -> dict:
-        ep = self.episodes[idx]
+        page = self.pages[idx]
+        total_len = len(page["token_types"])
 
-        # Apply token-level UNK masking to word sequence
-        if self.augment:
-            wids = [
-                unk_mask(w, self.unk_id, self.unk_rate)
-                if w not in (self.bos_id, self.eos_id,
-                             self.silent_id, self.pgbrk_id, self.pad_id)
-                else w
-                for w in ep["word_ids"]
-            ]
+        # Window selection
+        effective_len = self.seq_len - 2  # room for BOS + EOS
+
+        if total_len <= effective_len:
+            start, end = 0, total_len
+            add_bos, add_eos = True, True
         else:
-            wids = list(ep["word_ids"])
+            r = random.random()
+            if r < self.start_frac:
+                start = 0                                  # page start
+            elif r < self.start_frac + self.end_frac:
+                start = total_len - effective_len          # page end
+            else:
+                start = random.randint(0, total_len - effective_len)
+            end   = start + effective_len
+            add_bos = (start == 0)
+            add_eos = (end == total_len)
 
-        # Apply stroke augmentation
-        xys = [xy.clone() for xy in ep["stroke_xys"]]
+        # Extract window (already in scaled delta-xy form)
+        types = list(page["token_types"][start:end])
+        wids  = list(page["word_ids"][start:end])
+        xys_raw = [list(xy) for xy in page["xys"][start:end]]
+        ps    = list(page["pens"][start:end])
+
+        # Prepend BOS
+        if add_bos:
+            types.insert(0, WORD_TYPE)
+            wids.insert(0, self.bos_id)
+            xys_raw.insert(0, [0.0, 0.0])
+            ps.insert(0, 0)
+
+        # Append EOS
+        if add_eos:
+            types.append(WORD_TYPE)
+            wids.append(self.eos_id)
+            xys_raw.append([0.0, 0.0])
+            ps.append(0)
+
+        # Convert to tensors
+        token_types = torch.tensor(types, dtype=torch.long)
+        word_ids    = torch.tensor(wids, dtype=torch.long)
+        xy          = torch.tensor(xys_raw, dtype=torch.float32)
+        pen         = torch.tensor(ps, dtype=torch.long)
+
+        # Augmentation
         if self.augment:
-            xys = [augment_xy(xy) for xy in xys]
+            # UNK masking on word tokens (skip specials)
+            specials = {self.pad_id, self.bos_id, self.eos_id,
+                        self.silent_id, self.pgbrk_id}
+            for i in range(len(word_ids)):
+                if token_types[i] == WORD_TYPE and word_ids[i].item() not in specials:
+                    if random.random() < self.unk_rate:
+                        word_ids[i] = self.unk_id
+
+            # Scaled delta-xy augmentation (scale + jitter, no clamping)
+            stroke_mask = (token_types == STROKE_TYPE)
+            if stroke_mask.any():
+                xy[stroke_mask] = augment_delta_xy(xy[stroke_mask])
 
         return {
-            "word_ids":   wids,
-            "stroke_pos": list(ep["stroke_pos"]),
-            "stroke_xys": xys,
-            "stroke_ps":  [p.clone() for p in ep["stroke_ps"]],
-            "topic":      ep["topic"],
-            "tag":        ep["tag"],
+            "token_types": token_types,
+            "word_ids":    word_ids,
+            "xy":          xy,
+            "pen":         pen,
         }
 
 
-# ─── collation ────────────────────────────────────────────────────────────────
+# ─── collation ───────────────────────────────────────────────────────────────
 
-MAX_STROKE_CTX = 256   # max stroke contexts per batch (randomly subsampled)
-
-
-def collate_fn(batch: list[dict], pad_id: int = 0) -> dict:
-    """Collate a list of episodes into padded tensors.
-
-    Word sequences are padded to the longest in the batch.
-    Stroke sequences are collected across all batch items and padded
-    to the longest stroke sequence in the batch.
-
-    Returns a dict with:
-        word_ids:      (B, T_max)  long
-        word_pad_mask: (B, T_max)  bool  True = pad
-        strokes: dict or None
-            batch_idx: (N,)         long  — which batch item
-            word_pos:  (N,)         long  — word position within that item
-            xy:        (N, S_max, 2) float
-            p:         (N, S_max)    long
-            pad_mask:  (N, S_max)    bool  True = pad
-    where N = total words-with-strokes across the batch.
-    """
+def flat_collate_fn(batch: list[dict], pad_id: int = 0) -> dict:
+    """Collate flat interleaved sequences into padded tensors."""
     B = len(batch)
+    T_max = max(b["token_types"].size(0) for b in batch)
 
-    # ── word sequences ────────────────────────────────────────────────────────
-    T_max = max(len(b["word_ids"]) for b in batch)
-    word_ids      = torch.full((B, T_max), pad_id, dtype=torch.long)
-    word_pad_mask = torch.ones(B, T_max, dtype=torch.bool)
+    token_types = torch.zeros(B, T_max, dtype=torch.long)
+    word_ids    = torch.full((B, T_max), pad_id, dtype=torch.long)
+    xy          = torch.zeros(B, T_max, 2)
+    pen         = torch.zeros(B, T_max, dtype=torch.long)
+    pad_mask    = torch.ones(B, T_max, dtype=torch.bool)   # True = pad
 
     for i, b in enumerate(batch):
-        L = len(b["word_ids"])
-        word_ids[i, :L]      = torch.tensor(b["word_ids"], dtype=torch.long)
-        word_pad_mask[i, :L] = False
-
-    # ── stroke contexts ───────────────────────────────────────────────────────
-    all_bidx, all_wpos, all_xy, all_p = [], [], [], []
-    for i, b in enumerate(batch):
-        for pos, xy, p in zip(b["stroke_pos"], b["stroke_xys"], b["stroke_ps"]):
-            all_bidx.append(i)
-            all_wpos.append(pos)
-            all_xy.append(xy)
-            all_p.append(p)
-
-    # Randomly subsample stroke contexts if too many
-    if len(all_xy) > MAX_STROKE_CTX:
-        idx = random.sample(range(len(all_xy)), MAX_STROKE_CTX)
-        all_bidx = [all_bidx[i] for i in idx]
-        all_wpos = [all_wpos[i] for i in idx]
-        all_xy   = [all_xy[i]   for i in idx]
-        all_p    = [all_p[i]    for i in idx]
-
-    strokes = None
-    if all_xy:
-        S_max    = max(xy.size(0) for xy in all_xy)
-        N        = len(all_xy)
-        s_xy     = torch.zeros(N, S_max, 2)
-        s_p      = torch.zeros(N, S_max, dtype=torch.long)
-        s_pad    = torch.ones(N, S_max, dtype=torch.bool)
-
-        for i, (xy, p) in enumerate(zip(all_xy, all_p)):
-            S            = xy.size(0)
-            s_xy[i, :S]  = xy
-            s_p[i,  :S]  = p
-            s_pad[i, :S] = False
-
-        strokes = {
-            "batch_idx": torch.tensor(all_bidx, dtype=torch.long),
-            "word_pos":  torch.tensor(all_wpos,  dtype=torch.long),
-            "xy":        s_xy,
-            "p":         s_p,
-            "pad_mask":  s_pad,
-        }
+        L = b["token_types"].size(0)
+        token_types[i, :L] = b["token_types"]
+        word_ids[i, :L]    = b["word_ids"]
+        xy[i, :L]          = b["xy"]
+        pen[i, :L]         = b["pen"]
+        pad_mask[i, :L]    = False
 
     return {
-        "word_ids":      word_ids,
-        "word_pad_mask": word_pad_mask,
-        "strokes":       strokes,
+        "token_types": token_types,
+        "word_ids":    word_ids,
+        "xy":          xy,
+        "pen":         pen,
+        "pad_mask":    pad_mask,
     }
