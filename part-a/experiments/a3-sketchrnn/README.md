@@ -1,8 +1,14 @@
 # A.3 — Stroke Transformer Pretraining
 
+> **Status (Sept 2026): standalone.** This validated the MDN + pen-state
+> modeling stack (QuickDraw cat smoke test, then 229k MathWriting
+> expressions). The a4 model was ultimately trained from scratch on the
+> teacher corpus and does not load this checkpoint. `prime.py` (feed a real
+> stroke prefix, let the model complete it) is the most useful tool here.
+
 Pretrain a Sketch-RNN-derived transformer on public stroke datasets.
 Validates the modeling stack and produces a checkpoint with clean
-math-stroke priors that A.4 will inherit as its backbone.
+math-stroke priors.
 
 ## Pipeline
 

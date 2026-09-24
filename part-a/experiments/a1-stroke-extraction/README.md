@@ -18,7 +18,8 @@ videos/<tag>.mp4 + videos/<tag>.meta.json (title, description, duration)
     ▼  frames.py (ffmpeg)
 frames/<tag>/0001.png ... NNNN.png  (30 fps, downscaled)
     │
-    ▼  extract.py (frame diff + cursor mask + vectorize)
+    ▼  extract_v4.py (skeleton-based: new-ink detection → temporal-cluster
+    │                  skeletonization → pen-tip tracking; 10 fps subsample)
 output/<tag>.strokes.jsonl  (one stroke per line: list of {x,y,t})
     │
     ▼  viz.py

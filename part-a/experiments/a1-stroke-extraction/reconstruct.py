@@ -67,7 +67,7 @@ def reconstruct(tag: str, fps: int = 30, color_mode: str = "single",
                 tail_seconds: float = 1.0) -> None:
     strokes_path = OUTPUT / f"{tag}.strokes.jsonl"
     if not strokes_path.exists():
-        sys.exit(f"missing: {strokes_path}. run extract.py first.")
+        sys.exit(f"missing: {strokes_path}. run extract_v4.py (or pipeline.py) first.")
 
     # canvas size from any frame
     sample_paths = sorted((FRAMES / tag).glob("*.png"))
